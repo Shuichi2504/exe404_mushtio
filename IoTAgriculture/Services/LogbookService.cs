@@ -1,18 +1,24 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using IoTAgriculture.DTOs.Firebase;
 using IoTAgriculture.Services.Interfaces;
+using Microsoft.AspNetCore.Hosting;
 
 namespace IoTAgriculture.Services
 {
     public class LogbookService : ILogbookService
     {
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
+        private static readonly TimeSpan AutoExportStart = new(17, 0, 0);
         private readonly IFirebaseRtdbService _firebase;
+        private readonly string _exportDirectory;
 
-        public LogbookService(IFirebaseRtdbService firebase)
+        public LogbookService(IFirebaseRtdbService firebase, IWebHostEnvironment environment)
         {
             _firebase = firebase;
+            var webRoot = environment.WebRootPath ?? Path.Combine(AppContext.BaseDirectory, "wwwroot");
+            _exportDirectory = Path.Combine(webRoot, "exports");
         }
 
         public async Task CaptureSensorSnapshotsAsync(CancellationToken cancellationToken = default)
@@ -64,6 +70,29 @@ namespace IoTAgriculture.Services
             }
 
             await GenerateDailyLogbookAsync(DateOnly.FromDateTime(nowLocal.Date), cancellationToken);
+        }
+
+        public async Task<string?> ExportTodayLogbookAsync(CancellationToken cancellationToken = default)
+        {
+            var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, VietnamTimeZone);
+            if (!ShouldAutoExport(nowLocal.DateTime))
+            {
+                return null;
+            }
+
+            var today = DateOnly.FromDateTime(nowLocal.Date);
+            var logbook = await GetDailyLogbookAsync(today, cancellationToken)
+                ?? await GenerateDailyLogbookAsync(today, cancellationToken);
+
+            Directory.CreateDirectory(_exportDirectory);
+            var filePath = Path.Combine(_exportDirectory, $"logbook-{logbook.Date}.csv");
+            if (File.Exists(filePath))
+            {
+                return filePath;
+            }
+
+            await File.WriteAllTextAsync(filePath, BuildCsv(logbook), Encoding.UTF8, cancellationToken);
+            return filePath;
         }
 
         public Task<DailyLogbookDto?> GetDailyLogbookAsync(
@@ -305,6 +334,56 @@ namespace IoTAgriculture.Services
             var end = new TimeSpan(18, 0, 0);
 
             return timeOfDay >= start && timeOfDay < end;
+        }
+
+        private static bool ShouldAutoExport(DateTime localTime)
+        {
+            return localTime.TimeOfDay >= AutoExportStart;
+        }
+
+        private static string BuildCsv(DailyLogbookDto logbook)
+        {
+            var builder = new StringBuilder();
+            builder.AppendLine("timestamp,local_time,device_key,device_name,temperature,humidity,ground_temperature,top_temperature,ground_humidity,top_humidity,soil_moisture");
+
+            foreach (var record in logbook.Records)
+            {
+                builder.Append(Escape(record.Timestamp)).Append(',')
+                    .Append(Escape(record.LocalTime)).Append(',')
+                    .Append(Escape(record.DeviceKey)).Append(',')
+                    .Append(Escape(record.DeviceName)).Append(',')
+                    .Append(Format(record.Temperature)).Append(',')
+                    .Append(Format(record.Humidity)).Append(',')
+                    .Append(Format(record.GroundTemperature)).Append(',')
+                    .Append(Format(record.TopTemperature)).Append(',')
+                    .Append(Format(record.GroundHumidity)).Append(',')
+                    .Append(Format(record.TopHumidity)).Append(',')
+                    .Append(Format(record.SoilMoisture))
+                    .AppendLine();
+            }
+
+            return builder.ToString();
+        }
+
+        private static string Escape(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+
+            var needsQuotes = value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r');
+            if (!needsQuotes)
+            {
+                return value;
+            }
+
+            return $"\"{value.Replace("\"", "\"\"")}\"";
+        }
+
+        private static string Format(double? value)
+        {
+            return value?.ToString("0.##", CultureInfo.InvariantCulture) ?? string.Empty;
         }
 
         private static TimeZoneInfo ResolveVietnamTimeZone()
