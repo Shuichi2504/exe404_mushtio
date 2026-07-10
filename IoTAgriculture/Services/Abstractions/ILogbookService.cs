@@ -15,5 +15,7 @@ namespace IoTAgriculture.Services.Interfaces
             CancellationToken cancellationToken = default);
 
         Task GenerateTodayLogbookAsync(CancellationToken cancellationToken = default);
+
+        Task<string?> ExportTodayLogbookAsync(CancellationToken cancellationToken = default);
     }
 }
