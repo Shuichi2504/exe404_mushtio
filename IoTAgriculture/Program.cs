@@ -28,6 +28,7 @@ builder.Services.AddScoped<IAdminService, AdminService>();
 builder.Services.AddScoped<IAlertService, AlertService>();
 builder.Services.AddScoped<ILogbookService, LogbookService>();
 builder.Services.AddHostedService<PumpScheduleBackgroundService>();
+builder.Services.AddSingleton<IFirebasePushNotificationService, FirebasePushNotificationService>();
 builder.Services.AddScoped<ChatService>();
 
 builder.Services.AddCors(options =>
