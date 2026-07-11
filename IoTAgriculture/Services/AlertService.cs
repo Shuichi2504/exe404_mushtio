@@ -6,7 +6,8 @@ namespace IoTAgriculture.Services
 {
     public class AlertService : IAlertService
     {
-        private const double HighTemperatureCelsius = 30;
+        private const double HighTemperatureWarningCelsius = 30;
+        private const double HighTemperatureCriticalCelsius = 35;
         private const double LowSoilMoisturePercent = 30;
         private const double PoorAirQualityThreshold = 1000;
         private static readonly TimeSpan SensorOfflineAfter = TimeSpan.FromMinutes(2);
@@ -48,12 +49,25 @@ namespace IoTAgriculture.Services
                 await UpsertAlertAsync(
                     device.Key,
                     name,
-                    "high_temperature",
-                    temperature != null && temperature > HighTemperatureCelsius,
+                    "high_temperature_warning",
+                    temperature != null &&
+                        temperature > HighTemperatureWarningCelsius &&
+                        temperature <= HighTemperatureCriticalCelsius,
                     "temperature",
                     temperature,
-                    HighTemperatureCelsius,
-                    $"Nhiet do cao tren {HighTemperatureCelsius:0.#} C",
+                    HighTemperatureWarningCelsius,
+                    $"Nhiet do cao tren {HighTemperatureWarningCelsius:0.#} C",
+                    cancellationToken);
+
+                await UpsertAlertAsync(
+                    device.Key,
+                    name,
+                    "high_temperature_critical",
+                    temperature != null && temperature > HighTemperatureCriticalCelsius,
+                    "temperature",
+                    temperature,
+                    HighTemperatureCriticalCelsius,
+                    $"Nhiet do rat cao tren {HighTemperatureCriticalCelsius:0.#} C",
                     cancellationToken);
 
                 await UpsertAlertAsync(
