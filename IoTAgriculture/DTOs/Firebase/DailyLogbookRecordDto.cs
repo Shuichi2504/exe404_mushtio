@@ -22,6 +22,9 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("humidity")]
         public double? Humidity { get; set; }
 
+        [JsonPropertyName("air_quality")]
+        public double? AirQuality { get; set; }
+
         [JsonPropertyName("ground_temperature")]
         public double? GroundTemperature { get; set; }
 
@@ -41,6 +44,7 @@ namespace IoTAgriculture.DTOs.Firebase
         public bool HasValue =>
             Temperature != null ||
             Humidity != null ||
+            AirQuality != null ||
             GroundTemperature != null ||
             TopTemperature != null ||
             GroundHumidity != null ||
