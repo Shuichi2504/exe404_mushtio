@@ -10,6 +10,12 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("humidity")]
         public double? Humidity { get; set; }
 
+        [JsonPropertyName("air_quality")]
+        public double? AirQuality { get; set; }
+
+        [JsonPropertyName("air_status")]
+        public string? AirStatus { get; set; }
+
         [JsonPropertyName("ground_temperature")]
         public double? GroundTemperature { get; set; }
 
