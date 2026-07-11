@@ -6,16 +6,20 @@ namespace IoTAgriculture.Services
 {
     public class AlertService : IAlertService
     {
-        private const double HighTemperatureCelsius = 35;
+        private const double HighTemperatureCelsius = 30;
         private const double LowSoilMoisturePercent = 30;
         private const double PoorAirQualityThreshold = 1000;
         private static readonly TimeSpan SensorOfflineAfter = TimeSpan.FromMinutes(2);
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
         private readonly IFirebaseRtdbService _firebase;
+        private readonly IFirebasePushNotificationService _pushNotifications;
 
-        public AlertService(IFirebaseRtdbService firebase)
+        public AlertService(
+            IFirebaseRtdbService firebase,
+            IFirebasePushNotificationService pushNotifications)
         {
             _firebase = firebase;
+            _pushNotifications = pushNotifications;
         }
 
         public async Task ProcessAlertsAsync(CancellationToken cancellationToken = default)
@@ -137,6 +141,13 @@ namespace IoTAgriculture.Services
 
             await _firebase.SetAsync(path, alert, cancellationToken);
             await _firebase.PushAsync($"alerts/{deviceKey}", alert, cancellationToken);
+            await _pushNotifications.SendDeviceAlertAsync(
+                deviceKey,
+                deviceName,
+                $"Cảnh báo {deviceName}",
+                message,
+                alert.Severity,
+                cancellationToken);
         }
 
         private static bool IsSensorPayload(JsonElement json)
