@@ -44,6 +44,11 @@ namespace IoTAgriculture.Controllers
             {
                 Temperature = ReadDouble(json.Value, "temperature"),
                 Humidity = ReadDouble(json.Value, "humidity"),
+                AirQuality = ReadDouble(json.Value, "air_quality")
+                    ?? ReadDouble(json.Value, "airQuality")
+                    ?? ReadDouble(json.Value, "air_quanlity"),
+                AirStatus = ReadString(json.Value, "air_status")
+                    ?? ReadString(json.Value, "airStatus"),
                 GroundTemperature = ReadDouble(json.Value, "ground_temperature")
                     ?? ReadDouble(json.Value, "groundTemperature")
                     ?? ReadDouble(json.Value, "lower_temperature")
@@ -89,6 +94,9 @@ namespace IoTAgriculture.Controllers
                         timestamp = timestamp?.ToString() ?? x.Key,
                         temperature = ReadDouble(x.Value, "temperature"),
                         humidity = ReadDouble(x.Value, "humidity"),
+                        air_quality = ReadDouble(x.Value, "air_quality")
+                            ?? ReadDouble(x.Value, "airQuality")
+                            ?? ReadDouble(x.Value, "air_quanlity"),
                         ground_temperature = ReadDouble(x.Value, "ground_temperature")
                             ?? ReadDouble(x.Value, "groundTemperature")
                             ?? ReadDouble(x.Value, "lower_temperature")
@@ -125,6 +133,11 @@ namespace IoTAgriculture.Controllers
         {
             return ReadDouble(json, "temperature") != null ||
                 ReadDouble(json, "humidity") != null ||
+                ReadDouble(json, "air_quality") != null ||
+                ReadDouble(json, "airQuality") != null ||
+                ReadDouble(json, "air_quanlity") != null ||
+                ReadString(json, "air_status") != null ||
+                ReadString(json, "airStatus") != null ||
                 ReadDouble(json, "ground_humidity") != null ||
                 ReadDouble(json, "groundHumidity") != null ||
                 ReadDouble(json, "top_humidity") != null ||
