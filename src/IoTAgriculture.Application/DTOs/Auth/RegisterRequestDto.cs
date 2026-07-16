@@ -13,6 +13,9 @@ namespace IoTAgriculture.DTOs.Auth
         [Required, EmailAddress, MaxLength(120)]
         public string Email { get; set; } = string.Empty;
 
+        [Required, MaxLength(6), MinLength(6)]
+        public string EmailVerificationCode { get; set; } = string.Empty;
+
         [Required, MaxLength(255)]
         public string Address { get; set; } = string.Empty;
 

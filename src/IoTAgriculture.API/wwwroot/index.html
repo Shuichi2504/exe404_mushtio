@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mushtio Web</title>
+    <link rel="stylesheet" href="./styles.css?v=20260716-6" />
+  </head>
+  <body>
+    <div id="app">
+      <main class="boot">
+        <section class="boot-card">
+          <div class="brand-mark">M</div>
+          <h1>Mushtio Web</h1>
+          <p>Đang tải giao diện...</p>
+        </section>
+      </main>
+    </div>
+    <script>
+      window.addEventListener("error", function (event) {
+        var message = String(event.message || "");
+        var file = String(event.filename || "");
+        var isOwnScript =
+          !file ||
+          file.indexOf(window.location.origin) === 0 ||
+          file.indexOf("/app.js") >= 0;
+
+        if (
+          message.indexOf("zaloJSV2") >= 0 ||
+          message.indexOf("Zalo") >= 0 ||
+          !isOwnScript
+        ) {
+          return;
+        }
+
+        var app = document.getElementById("app");
+        if (!app) return;
+        app.innerHTML =
+          '<main class="boot"><section class="boot-card error-card">' +
+          '<div class="brand-mark">!</div><h1>Không tải được web</h1>' +
+          '<p>JavaScript đang bị lỗi. Hãy deploy lại bản mới nhất.</p>' +
+          '<pre>' + message + "</pre>" +
+          "</section></main>";
+      });
+    </script>
+    <script defer src="./app.js?v=20260716-6"></script>
+  </body>
+</html>

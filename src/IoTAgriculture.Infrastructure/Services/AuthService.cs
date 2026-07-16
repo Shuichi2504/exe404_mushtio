@@ -40,7 +40,8 @@ namespace IoTAgriculture.Services
                 throw new InvalidOperationException("Email already exists");
             }
 
-            if (!await HasVerifiedCodeAsync(email, "register"))
+            var verificationCode = await FindCodeAsync(email, "register", dto.EmailVerificationCode);
+            if (verificationCode?.VerifiedAt == null)
             {
                 throw new InvalidOperationException("Email verification is required");
             }
@@ -63,6 +64,7 @@ namespace IoTAgriculture.Services
             };
 
             _db.Users.Add(user);
+            verificationCode.UserId = user.UserId;
             await MarkCodesUsedAsync(email, "register");
             await _db.SaveChangesAsync();
             await LogActivityAsync(user.UserId, "register", "Tao tai khoan moi", "info");
@@ -91,6 +93,23 @@ namespace IoTAgriculture.Services
 
             var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
             var now = DateTime.UtcNow;
+            var existingCodes = await _db.EmailVerificationCodes
+                .Where(x => x.Email == email && x.Purpose == purpose && x.UsedAt == null)
+                .ToListAsync();
+            var recentCode = existingCodes
+                .Where(x => x.CreatedAt > now.AddSeconds(-60))
+                .OrderByDescending(x => x.CreatedAt)
+                .FirstOrDefault();
+            if (recentCode != null)
+            {
+                throw new InvalidOperationException("Please wait before requesting another code");
+            }
+
+            foreach (var oldCode in existingCodes)
+            {
+                oldCode.UsedAt = now;
+            }
+
             _db.EmailVerificationCodes.Add(new EmailVerificationCode
             {
                 VerificationId = Guid.NewGuid(),
@@ -394,9 +413,13 @@ namespace IoTAgriculture.Services
         private static string NormalizePurpose(string purpose)
         {
             var normalized = purpose.Trim().ToLowerInvariant();
-            return normalized == "reset" || normalized == "forgot-password"
+            normalized = normalized == "reset" || normalized == "forgot-password"
                 ? "reset-password"
                 : normalized;
+
+            return normalized is "register" or "reset-password"
+                ? normalized
+                : throw new InvalidOperationException("Invalid email verification purpose");
         }
 
         private static string NormalizeIdentifier(LoginRequestDto dto)
@@ -409,16 +432,6 @@ namespace IoTAgriculture.Services
 
             raw = raw.Trim();
             return raw.Contains('@') ? NormalizeEmail(raw) : NormalizePhone(raw);
-        }
-
-        private async Task<bool> HasVerifiedCodeAsync(string email, string purpose)
-        {
-            return await _db.EmailVerificationCodes.AnyAsync(x =>
-                x.Email == email &&
-                x.Purpose == purpose &&
-                x.VerifiedAt != null &&
-                x.UsedAt == null &&
-                x.ExpiresAt > DateTime.UtcNow);
         }
 
         private async Task<bool> HasCodeAsync(string email, string purpose, string code)

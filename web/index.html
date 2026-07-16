@@ -4,10 +4,30 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Mushtio Web</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260716-3" />
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="./app.js"></script>
+    <div id="app">
+      <main class="boot">
+        <section class="boot-card">
+          <div class="brand-mark">M</div>
+          <h1>Mushtio Web</h1>
+          <p>Đang tải giao diện...</p>
+        </section>
+      </main>
+    </div>
+    <script>
+      window.addEventListener("error", function (event) {
+        var app = document.getElementById("app");
+        if (!app) return;
+        app.innerHTML =
+          '<main class="boot"><section class="boot-card error-card">' +
+          '<div class="brand-mark">!</div><h1>Không tải được web</h1>' +
+          '<p>JavaScript đang bị lỗi. Hãy deploy lại bản mới nhất.</p>' +
+          '<pre>' + String(event.message || "Script error") + "</pre>" +
+          "</section></main>";
+      });
+    </script>
+    <script defer src="./app.js?v=20260716-3"></script>
   </body>
 </html>

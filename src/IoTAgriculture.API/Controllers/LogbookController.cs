@@ -1,8 +1,10 @@
 using System.Globalization;
 using System.Text;
+using IoTAgriculture.Data;
 using IoTAgriculture.DTOs.Firebase;
 using IoTAgriculture.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace IoTAgriculture.Controllers
 {
@@ -11,10 +13,17 @@ namespace IoTAgriculture.Controllers
     public class LogbookController : ControllerBase
     {
         private readonly ILogbookService _service;
+        private readonly IAuthService _authService;
+        private readonly IoTDbContext _db;
 
-        public LogbookController(ILogbookService service)
+        public LogbookController(
+            ILogbookService service,
+            IAuthService authService,
+            IoTDbContext db)
         {
             _service = service;
+            _authService = authService;
+            _db = db;
         }
 
         [HttpGet("today")]
@@ -22,8 +31,9 @@ namespace IoTAgriculture.Controllers
         {
             var today = TodayInVietnam();
             var logbook = await _service.GenerateDailyLogbookAsync(today, cancellationToken);
+            var filtered = await FilterForCurrentUserAsync(logbook, cancellationToken);
 
-            return Ok(logbook);
+            return filtered == null ? Unauthorized() : Ok(filtered);
         }
 
         [HttpPost("today/generate")]
@@ -31,8 +41,9 @@ namespace IoTAgriculture.Controllers
         {
             var today = TodayInVietnam();
             var logbook = await _service.GenerateDailyLogbookAsync(today, cancellationToken);
+            var filtered = await FilterForCurrentUserAsync(logbook, cancellationToken);
 
-            return Ok(logbook);
+            return filtered == null ? Unauthorized() : Ok(filtered);
         }
 
         [HttpGet("today/csv")]
@@ -40,11 +51,13 @@ namespace IoTAgriculture.Controllers
         {
             var today = TodayInVietnam();
             var logbook = await _service.GenerateDailyLogbookAsync(today, cancellationToken);
+            var filtered = await FilterForCurrentUserAsync(logbook, cancellationToken);
+            if (filtered == null) return Unauthorized();
 
             return File(
-                Encoding.UTF8.GetBytes(BuildCsv(logbook)),
+                Encoding.UTF8.GetBytes(BuildCsv(filtered)),
                 "text/csv; charset=utf-8",
-                $"logbook-{logbook.Date}.csv");
+                $"logbook-{filtered.Date}.csv");
         }
 
         [HttpGet("{date}")]
@@ -59,8 +72,9 @@ namespace IoTAgriculture.Controllers
                 ? await _service.GenerateDailyLogbookAsync(parsed, cancellationToken)
                 : await _service.GetDailyLogbookAsync(parsed, cancellationToken)
                     ?? await _service.GenerateDailyLogbookAsync(parsed, cancellationToken);
+            var filtered = await FilterForCurrentUserAsync(logbook, cancellationToken);
 
-            return Ok(logbook);
+            return filtered == null ? Unauthorized() : Ok(filtered);
         }
 
         [HttpPost("{date}/generate")]
@@ -72,8 +86,9 @@ namespace IoTAgriculture.Controllers
             }
 
             var logbook = await _service.GenerateDailyLogbookAsync(parsed, cancellationToken);
+            var filtered = await FilterForCurrentUserAsync(logbook, cancellationToken);
 
-            return Ok(logbook);
+            return filtered == null ? Unauthorized() : Ok(filtered);
         }
 
         [HttpGet("{date}/csv")]
@@ -88,11 +103,49 @@ namespace IoTAgriculture.Controllers
                 ? await _service.GenerateDailyLogbookAsync(parsed, cancellationToken)
                 : await _service.GetDailyLogbookAsync(parsed, cancellationToken)
                     ?? await _service.GenerateDailyLogbookAsync(parsed, cancellationToken);
+            var filtered = await FilterForCurrentUserAsync(logbook, cancellationToken);
+            if (filtered == null) return Unauthorized();
 
             return File(
-                Encoding.UTF8.GetBytes(BuildCsv(logbook)),
+                Encoding.UTF8.GetBytes(BuildCsv(filtered)),
                 "text/csv; charset=utf-8",
-                $"logbook-{logbook.Date}.csv");
+                $"logbook-{filtered.Date}.csv");
+        }
+
+        private async Task<DailyLogbookDto?> FilterForCurrentUserAsync(
+            DailyLogbookDto logbook,
+            CancellationToken cancellationToken)
+        {
+            var profile = await _authService.GetProfileAsync(ReadBearerToken());
+            if (profile == null) return null;
+            if (string.Equals(profile.Role, "admin", StringComparison.OrdinalIgnoreCase))
+            {
+                return logbook;
+            }
+
+            var keys = await _db.UserDevices
+                .Where(x => x.UserId == profile.UserId)
+                .Select(x => x.DeviceKey)
+                .ToListAsync(cancellationToken);
+            var allowed = new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase);
+
+            return new DailyLogbookDto
+            {
+                Date = logbook.Date,
+                GeneratedAt = logbook.GeneratedAt,
+                GeneratedLocal = logbook.GeneratedLocal,
+                Records = logbook.Records
+                    .Where(x => allowed.Contains(x.DeviceKey))
+                    .ToList()
+            };
+        }
+
+        private string ReadBearerToken()
+        {
+            var header = Request.Headers.Authorization.ToString();
+            return header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                ? header["Bearer ".Length..].Trim()
+                : string.Empty;
         }
 
         private static string BuildCsv(DailyLogbookDto logbook)

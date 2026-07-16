@@ -1,5 +1,6 @@
 using IoTAgriculture.DTOs.Auth;
 using IoTAgriculture.Services.Interfaces;
+using IoTAgriculture.ViewModels.Auth;
 using Microsoft.AspNetCore.Mvc;
 
 namespace IoTAgriculture.Controllers
@@ -16,11 +17,20 @@ namespace IoTAgriculture.Controllers
         }
 
         [HttpPost("register")]
-        public async Task<IActionResult> Register([FromBody] RegisterRequestDto dto)
+        public async Task<IActionResult> Register([FromBody] RegisterViewModel request)
         {
             try
             {
-                var result = await _authService.RegisterAsync(dto);
+                var result = await _authService.RegisterAsync(new RegisterRequestDto
+                {
+                    FullName = request.FullName,
+                    PhoneNumber = request.PhoneNumber,
+                    Email = request.Email,
+                    EmailVerificationCode = request.EmailVerificationCode,
+                    Address = request.Address,
+                    DateOfBirth = request.DateOfBirth,
+                    Password = request.Password
+                });
                 return Ok(result);
             }
             catch (InvalidOperationException ex)
@@ -30,11 +40,15 @@ namespace IoTAgriculture.Controllers
         }
 
         [HttpPost("request-email-code")]
-        public async Task<IActionResult> RequestEmailCode([FromBody] EmailCodeRequestDto dto)
+        public async Task<IActionResult> RequestEmailCode([FromBody] EmailCodeRequestViewModel request)
         {
             try
             {
-                await _authService.RequestEmailCodeAsync(dto);
+                await _authService.RequestEmailCodeAsync(new EmailCodeRequestDto
+                {
+                    Email = request.Email,
+                    Purpose = request.Purpose
+                });
                 return Ok(new { message = "Verification code sent" });
             }
             catch (InvalidOperationException ex)
@@ -44,9 +58,14 @@ namespace IoTAgriculture.Controllers
         }
 
         [HttpPost("verify-email-code")]
-        public async Task<IActionResult> VerifyEmailCode([FromBody] VerifyEmailCodeRequestDto dto)
+        public async Task<IActionResult> VerifyEmailCode([FromBody] VerifyEmailCodeViewModel request)
         {
-            var valid = await _authService.VerifyEmailCodeAsync(dto);
+            var valid = await _authService.VerifyEmailCodeAsync(new VerifyEmailCodeRequestDto
+            {
+                Email = request.Email,
+                Code = request.Code,
+                Purpose = request.Purpose
+            });
             return valid
                 ? Ok(new { message = "Email code is valid" })
                 : BadRequest(new { message = "Invalid or expired verification code" });

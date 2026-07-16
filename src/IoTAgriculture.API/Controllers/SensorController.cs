@@ -1,7 +1,9 @@
 using System.Text.Json;
+using IoTAgriculture.Data;
 using IoTAgriculture.DTOs.Firebase;
 using IoTAgriculture.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace IoTAgriculture.Controllers
 {
@@ -10,20 +12,27 @@ namespace IoTAgriculture.Controllers
     public class SensorController : ControllerBase
     {
         private readonly IFirebaseRtdbService _firebase;
+        private readonly IAuthService _authService;
+        private readonly IoTDbContext _db;
 
-        public SensorController(IFirebaseRtdbService firebase)
+        public SensorController(IFirebaseRtdbService firebase, IAuthService authService, IoTDbContext db)
         {
             _firebase = firebase;
+            _authService = authService;
+            _db = db;
         }
 
         [HttpGet]
         public async Task<IActionResult> GetSensorKeys(CancellationToken cancellationToken)
         {
+            var access = await ReadDeviceAccessAsync(cancellationToken);
+            if (access == null) return Unauthorized();
+
             var devices = await _firebase.GetAsync<Dictionary<string, JsonElement>>("devices", cancellationToken)
                 ?? new Dictionary<string, JsonElement>();
 
             var keys = devices
-                .Where(x => x.Value.ValueKind == JsonValueKind.Object && IsSensorPayload(x.Value))
+                .Where(x => access.CanRead(x.Key) && x.Value.ValueKind == JsonValueKind.Object && IsSensorPayload(x.Value))
                 .Select(x => x.Key)
                 .OrderBy(x => x)
                 .ToList();
@@ -34,11 +43,14 @@ namespace IoTAgriculture.Controllers
         [HttpGet("summary")]
         public async Task<IActionResult> GetSummary(CancellationToken cancellationToken)
         {
+            var access = await ReadDeviceAccessAsync(cancellationToken);
+            if (access == null) return Unauthorized();
+
             var devices = await _firebase.GetAsync<Dictionary<string, JsonElement>>("devices", cancellationToken)
                 ?? new Dictionary<string, JsonElement>();
 
             var sensors = devices
-                .Where(x => x.Value.ValueKind == JsonValueKind.Object && IsSensorPayload(x.Value))
+                .Where(x => access.CanRead(x.Key) && x.Value.ValueKind == JsonValueKind.Object && IsSensorPayload(x.Value))
                 .Select(x => new
                 {
                     Key = x.Key,
@@ -82,6 +94,10 @@ namespace IoTAgriculture.Controllers
         [HttpGet("{sensorKey}")]
         public async Task<IActionResult> GetSensorState(string sensorKey, CancellationToken cancellationToken)
         {
+            var access = await ReadDeviceAccessAsync(cancellationToken);
+            if (access == null) return Unauthorized();
+            if (!access.CanRead(sensorKey)) return StatusCode(StatusCodes.Status403Forbidden);
+
             var json = await _firebase.GetAsync<JsonElement?>($"devices/{sensorKey}", cancellationToken);
             if (json == null || json.Value.ValueKind != JsonValueKind.Object || !IsSensorPayload(json.Value))
             {
@@ -128,6 +144,10 @@ namespace IoTAgriculture.Controllers
             [FromQuery] long? to,
             CancellationToken cancellationToken)
         {
+            var access = await ReadDeviceAccessAsync(cancellationToken);
+            if (access == null) return Unauthorized();
+            if (!access.CanRead(sensorKey)) return StatusCode(StatusCodes.Status403Forbidden);
+
             var raw = await _firebase.GetAsync<Dictionary<string, JsonElement>>(
                 $"history/{sensorKey}",
                 cancellationToken) ?? new Dictionary<string, JsonElement>();
@@ -175,6 +195,50 @@ namespace IoTAgriculture.Controllers
                 .ToList();
 
             return Ok(items);
+        }
+
+        private async Task<DeviceAccess?> ReadDeviceAccessAsync(CancellationToken cancellationToken)
+        {
+            var profile = await _authService.GetProfileAsync(ReadBearerToken());
+            if (profile == null) return null;
+
+            if (string.Equals(profile.Role, "admin", StringComparison.OrdinalIgnoreCase))
+            {
+                return DeviceAccess.Admin;
+            }
+
+            var keys = await _db.UserDevices
+                .Where(x => x.UserId == profile.UserId)
+                .Select(x => x.DeviceKey)
+                .ToListAsync(cancellationToken);
+
+            return new DeviceAccess(keys);
+        }
+
+        private string ReadBearerToken()
+        {
+            var header = Request.Headers.Authorization.ToString();
+            return header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                ? header["Bearer ".Length..].Trim()
+                : string.Empty;
+        }
+
+        private sealed class DeviceAccess
+        {
+            public static readonly DeviceAccess Admin = new(null);
+            private readonly HashSet<string>? _keys;
+
+            public DeviceAccess(IEnumerable<string>? keys)
+            {
+                _keys = keys == null
+                    ? null
+                    : new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase);
+            }
+
+            public bool CanRead(string deviceKey)
+            {
+                return _keys == null || _keys.Contains(deviceKey);
+            }
         }
 
         private static bool IsSensorPayload(JsonElement json)

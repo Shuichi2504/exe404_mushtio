@@ -147,23 +147,6 @@ namespace IoTAgriculture.Controllers
             }
 
             var deviceKey = dto.DeviceKey.Trim();
-            var assignedToOtherUser = await _db.UserDevices
-                .Include(x => x.User)
-                .FirstOrDefaultAsync(x => x.DeviceKey == deviceKey && x.UserId != userId);
-            if (assignedToOtherUser != null)
-            {
-                var ownerName = assignedToOtherUser.User?.FullName;
-                if (string.IsNullOrWhiteSpace(ownerName))
-                {
-                    ownerName = "người dùng khác";
-                }
-
-                return Conflict(new
-                {
-                    message = $"Thiết bị này đã được gán cho {ownerName}. Vui lòng hủy gán trước khi gán cho người dùng khác."
-                });
-            }
-
             var exists = await _db.UserDevices.AnyAsync(x =>
                 x.UserId == userId && x.DeviceKey == deviceKey);
             if (!exists)

@@ -1,606 +1,663 @@
-const DEFAULT_API = `${window.location.origin}/api`;
-const TOKEN_KEY = "mushtio.web.token";
-const API_KEY = "mushtio.web.api";
+(function () {
+  "use strict";
 
-const state = {
-  apiBase: localStorage.getItem(API_KEY) || DEFAULT_API,
-  token: localStorage.getItem(TOKEN_KEY) || "",
-  user: null,
-  view: "home",
-  assigned: [],
-  sensors: new Map(),
-  histories: new Map(),
-  pump: null,
-  pumpLogs: [],
-  logbook: null,
-  loading: false,
-  selectedMetric: null,
-  selectedSensorKey: null,
-  error: ""
-};
+  var API_BASE = window.location.origin + "/api";
+  var TOKEN_KEY = "mushtio.web.token";
+  var API_KEY = "mushtio.web.api";
+  var RELAY_KEY = "relay2";
 
-const metrics = [
-  { id: "temperature", label: "Nhiệt độ", unit: "°C", icon: "🌡", color: "var(--coral)", max: 45 },
-  { id: "humidity", label: "Độ ẩm không khí", unit: "%", icon: "💧", color: "var(--sky)", max: 100 },
-  { id: "airQuality", label: "Không khí", unit: "ppm", icon: "〰", color: "var(--leaf)", max: 3000 },
-  { id: "soilMoisture", label: "Độ ẩm đất", unit: "%", icon: "⌁", color: "var(--leaf)", max: 100 }
-];
-
-const app = document.querySelector("#app");
-
-function api(path, options = {}) {
-  const headers = { ...(options.headers || {}) };
-  if (!(options.body instanceof FormData)) headers["Content-Type"] = headers["Content-Type"] || "application/json";
-  if (state.token) headers.Authorization = `Bearer ${state.token}`;
-  return fetch(`${state.apiBase}${path}`, { ...options, headers }).then(async (res) => {
-    if (res.ok) return res.status === 204 ? null : res.json();
-    let message = `HTTP ${res.status}`;
-    try {
-      const body = await res.json();
-      message = body.message || message;
-    } catch {}
-    throw new Error(message);
-  });
-}
-
-function fmt(value, unit = "") {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
-  const number = Number(value);
-  const text = Math.abs(number) >= 100 ? number.toFixed(0) : number.toFixed(1);
-  return `${text}${unit ? ` ${unit}` : ""}`;
-}
-
-function valueFor(sensor, kind) {
-  if (!sensor) return null;
-  if (kind === "temperature") return first(sensor.temperature, avg(sensor.groundTemperature, sensor.topTemperature), sensor.groundTemperature, sensor.topTemperature);
-  if (kind === "humidity") return first(sensor.humidity, sensor.topHumidity, avg(sensor.groundHumidity, sensor.topHumidity), sensor.groundHumidity);
-  if (kind === "airQuality") return first(sensor.airQuality, sensor.air_quality);
-  return first(sensor.soilMoisture, sensor.soil_moisture, sensor.groundHumidity);
-}
-
-function historyValue(item, kind) {
-  if (kind === "temperature") return first(item.temperature, avg(item.ground_temperature, item.top_temperature), item.groundTemperature, item.topTemperature);
-  if (kind === "humidity") return first(item.humidity, item.top_humidity, avg(item.ground_humidity, item.top_humidity), item.groundHumidity);
-  if (kind === "airQuality") return first(item.air_quality, item.airQuality);
-  return first(item.soil_moisture, item.soilMoisture, item.ground_humidity, item.groundHumidity);
-}
-
-function first(...values) {
-  return values.find((x) => x !== null && x !== undefined && x !== "" && !Number.isNaN(Number(x))) ?? null;
-}
-
-function avg(a, b) {
-  if (a === null || a === undefined || b === null || b === undefined) return null;
-  return (Number(a) + Number(b)) / 2;
-}
-
-function isPump(item) {
-  const text = `${item.deviceType || ""} ${item.deviceKey || ""} ${item.deviceName || ""}`.toLowerCase();
-  return text.includes("pump") || text.includes("bom");
-}
-
-function isSensorAssignment(item) {
-  return !isPump(item);
-}
-
-function sensorName(key) {
-  const assigned = state.assigned.find((x) => x.deviceKey === key);
-  const sensor = state.sensors.get(key);
-  return assigned?.deviceName || sensor?.deviceName || sensor?.device_name || key;
-}
-
-async function loadInitial() {
-  state.loading = true;
-  state.error = "";
-  render();
-  try {
-    state.user = await api("/auth/me");
-    state.assigned = await api("/me/devices");
-    await loadSensors();
-    await loadPump();
-    await loadLogbook();
-  } catch (err) {
-    state.error = err.message;
-    if (String(err.message).includes("401")) logout(false);
-  } finally {
-    state.loading = false;
-    render();
-  }
-}
-
-async function loadSensors() {
-  const assignedSensors = state.assigned.filter(isSensorAssignment);
-  const keys = assignedSensors.length ? assignedSensors.map((x) => x.deviceKey) : await api("/sensors");
-  const entries = await Promise.all(keys.map(async (key) => {
-    try {
-      const sensor = await api(`/sensors/${encodeURIComponent(key)}`);
-      return [key, sensor];
-    } catch {
-      return null;
-    }
-  }));
-  state.sensors = new Map(entries.filter(Boolean));
-  await Promise.all([...state.sensors.keys()].map(loadHistory));
-}
-
-async function loadHistory(key) {
-  const to = Date.now();
-  const from = to - 24 * 60 * 60 * 1000;
-  try {
-    const rows = await api(`/sensors/${encodeURIComponent(key)}/history?from=${from}&to=${to}`);
-    state.histories.set(key, rows);
-  } catch {
-    state.histories.set(key, []);
-  }
-}
-
-async function loadPump() {
-  const pump = state.assigned.find(isPump);
-  if (!pump) {
-    state.pump = null;
-    state.pumpLogs = [];
-    return;
-  }
-  try {
-    state.pump = { assignment: pump, state: await api(`/devices/${encodeURIComponent(pump.deviceKey)}`) };
-    state.pumpLogs = await api(`/devices/${encodeURIComponent(pump.deviceKey)}/logs?limit=20`);
-  } catch {
-    state.pump = { assignment: pump, state: null };
-    state.pumpLogs = [];
-  }
-}
-
-async function loadLogbook() {
-  try {
-    state.logbook = await api("/logbooks/today");
-  } catch {
-    state.logbook = null;
-  }
-}
-
-async function refresh() {
-  await loadInitial();
-}
-
-async function togglePump() {
-  if (!state.pump) return;
-  const pumpKey = state.pump.assignment.deviceKey;
-  const current = Boolean(state.pump.state?.relay2);
-  await api(`/devices/${encodeURIComponent(pumpKey)}/relay/relay2`, {
-    method: "PUT",
-    body: JSON.stringify({ value: !current })
-  });
-  await loadPump();
-  render();
-}
-
-function loginTemplate() {
-  return `
-    <main class="login-shell">
-      <section class="login-card card">
-        <div class="login-art">
-          <div class="brand"><span class="brand-mark">M</span><span>Mushtio</span></div>
-          <div>
-            <h1>Dashboard trang trại nấm IoT</h1>
-            <p style="margin-top:14px;color:rgba(255,255,255,.84);font-weight:800">Web riêng, dùng API backend, chỉ hiển thị thiết bị được admin gán cho tài khoản.</p>
-          </div>
-          <div class="hero-stats">
-            <div class="hero-chip"><span>Cảm biến</span><b>Chi tiết từng loại</b></div>
-            <div class="hero-chip"><span>Logbook</span><b>Min / Max theo giờ</b></div>
-          </div>
-        </div>
-        <form class="login-form" id="loginForm">
-          <h2>Đăng nhập</h2>
-          <p class="muted" style="margin-top:6px">Dùng tài khoản backend hiện tại.</p>
-          <div class="field"><label>Email hoặc số điện thoại</label><input name="identifier" autocomplete="username" required /></div>
-          <div class="field"><label>Mật khẩu</label><input name="password" type="password" autocomplete="current-password" required /></div>
-          <div class="field"><label>API base URL</label><input name="apiBase" value="${escapeHtml(state.apiBase)}" required /></div>
-          <button class="btn primary" style="width:100%;margin-top:18px" type="submit">Đăng nhập</button>
-          ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ""}
-        </form>
-      </section>
-    </main>
-  `;
-}
-
-function shellTemplate(content) {
-  const nav = [
-    ["home", "⌂", "Home"],
-    ["devices", "▣", "Thiết bị"],
-    ["logbook", "☷", "Logbook"],
-    ["profile", "○", "Tài khoản"]
-  ];
-  const navButtons = nav.map(([id, icon, label]) => `<button data-view="${id}" class="${state.view === id ? "active" : ""}"><span>${icon}</span><span>${label}</span></button>`).join("");
-  return `
-    <div class="app">
-      <aside class="sidebar">
-        <div class="brand"><span class="brand-mark">M</span><span>Mushtio</span></div>
-        <nav class="nav">${navButtons}</nav>
-      </aside>
-      <main class="content">${content}</main>
-      <nav class="bottom-nav">${navButtons}</nav>
-    </div>
-    <div class="drawer ${state.selectedMetric ? "open" : ""}" id="drawer">${state.selectedMetric ? detailTemplate() : ""}</div>
-  `;
-}
-
-function homeTemplate() {
-  const alert = criticalMessage();
-  const onlineCount = [...state.sensors.values()].filter(isOnline).length;
-  return `
-    ${topbar("Chào ${escapeHtml((state.user?.fullName || "nhà vườn").split(" ").at(-1))}", "Dashboard trang trại nấm IoT")}
-    <section class="hero card ${alert ? "alert" : ""}">
-      <div class="hero-row">
-        <span class="icon-bubble">♧</span>
-        <span class="pill"><span class="dot"></span>${alert ? "Cần xử lý" : `${onlineCount} online`}</span>
-      </div>
-      <div>
-        <h2>${alert ? "Có cảnh báo" : "Trang trại ổn định"}</h2>
-        <p>${escapeHtml(alert || `${state.sensors.size} cảm biến đang được theo dõi`)}</p>
-        <div class="hero-stats">
-          <div class="hero-chip"><span>Cảm biến</span><b>${state.sensors.size} thiết bị</b></div>
-          <div class="hero-chip"><span>Cập nhật</span><b>${latestUpdateLabel()}</b></div>
-        </div>
-      </div>
-    </section>
-    <section class="section">
-      <div class="section-head"><h2>Dữ liệu cảm biến</h2><span class="muted">Bấm để xem chi tiết</span></div>
-      <div class="grid four">${metrics.map(metricCard).join("")}</div>
-    </section>
-    <section class="section grid two">
-      ${pumpCard()}
-      ${logbookCard()}
-    </section>
-    <section class="section">
-      <div class="section-head"><h2>Thiết bị được gán</h2><span class="muted">${state.assigned.length} thiết bị</span></div>
-      ${devicesGrid()}
-    </section>
-  `;
-}
-
-function topbar(title, subtitle) {
-  return `
-    <div class="topbar">
-      <div><h1>${title}</h1><div class="eyebrow" style="margin-top:7px">${subtitle}</div></div>
-      <div class="actions">
-        <button class="btn" id="refreshBtn">Làm mới</button>
-        <button class="btn" id="logoutBtn">Đăng xuất</button>
-      </div>
-    </div>
-    ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ""}
-  `;
-}
-
-function metricCard(metric) {
-  const values = [...state.sensors.values()].map((x) => valueFor(x, metric.id)).filter((x) => x !== null);
-  const latest = values.length ? values.at(-1) : null;
-  return `
-    <button class="metric-card card" data-metric="${metric.id}">
-      <span class="icon-bubble" style="background:${metric.color}">${metric.icon}</span>
-      <span>
-        <span class="metric-value" style="color:${metric.color}">${fmt(latest, metric.unit)}</span>
-        <h3>${metric.label}</h3>
-        <small>${statusFor(metric.id, latest)}</small>
-      </span>
-    </button>
-  `;
-}
-
-function pumpCard() {
-  const pump = state.pump;
-  const on = Boolean(pump?.state?.relay2);
-  return `
-    <article class="wide-card card pad">
-      <span class="icon-bubble" style="background:${on ? "var(--leaf)" : "var(--muted)"}">💧</span>
-      <div class="grow">
-        <h3>Máy bơm</h3>
-        <p class="metric-value" style="font-size:19px;color:${on ? "var(--leaf)" : "var(--muted)"}">${pump ? (on ? "Đang chạy" : "Đang nghỉ") : "Chưa gán"}</p>
-        <small class="muted">${pump ? escapeHtml(pump.assignment.deviceName || pump.assignment.deviceKey) : "Admin chưa gán máy bơm cho tài khoản"}</small>
-      </div>
-      <button class="switch ${on ? "on" : ""}" id="pumpSwitch" ${pump ? "" : "disabled"} aria-label="Bật tắt máy bơm"></button>
-    </article>
-  `;
-}
-
-function logbookCard() {
-  const count = state.logbook?.records?.length || 0;
-  return `
-    <article class="wide-card card pad">
-      <span class="icon-bubble" style="background:var(--info)">☷</span>
-      <div class="grow">
-        <h3>Logbook điện tử</h3>
-        <p class="metric-value" style="font-size:19px;color:var(--info)">${count} dòng hôm nay</p>
-        <small class="muted">Hiển thị min / max theo từng khung giờ</small>
-      </div>
-      <button class="btn icon" data-view="logbook">›</button>
-    </article>
-  `;
-}
-
-function devicesTemplate() {
-  return `
-    ${topbar("Thiết bị", "Chỉ hiển thị danh sách admin đã gán cho tài khoản")}
-    ${devicesGrid(true)}
-    <section class="section">
-      <div class="section-head"><h2>Log máy bơm</h2><span class="muted">${state.pumpLogs.length} dòng</span></div>
-      ${pumpLogsTable()}
-    </section>
-  `;
-}
-
-function devicesGrid(expanded = false) {
-  const items = state.assigned.length ? state.assigned : [...state.sensors.keys()].map((key) => ({ deviceKey: key, deviceName: sensorName(key), deviceType: "sensor" }));
-  if (!items.length) return `<div class="card empty">Chưa có thiết bị được gán. Vui lòng nhờ admin gán thiết bị cho tài khoản.</div>`;
-  const visible = expanded ? items : items.slice(0, 4);
-  return `<div class="grid four">${visible.map((item) => `
-    <article class="device-tile card pad">
-      <span class="icon-bubble">${isPump(item) ? "💧" : "⌁"}</span>
-      <div>
-        <h3>${escapeHtml(item.deviceName || item.deviceKey)}</h3>
-        <small class="muted">${escapeHtml(item.deviceType || "device")} · ${escapeHtml(item.deviceKey)}</small>
-      </div>
-    </article>
-  `).join("")}</div>`;
-}
-
-function logbookTemplate() {
-  return `
-    ${topbar("Logbook", "Giá trị thấp nhất và cao nhất theo giờ")}
-    <div class="actions" style="justify-content:flex-start;margin-bottom:14px">
-      <button class="btn primary" id="generateLogbook">Tạo lại hôm nay</button>
-      <a class="btn" style="display:inline-flex;align-items:center;text-decoration:none" href="${state.apiBase}/logbooks/today/csv" target="_blank" rel="noreferrer">CSV</a>
-    </div>
-    ${logbookTable()}
-  `;
-}
-
-function logbookTable() {
-  const rows = state.logbook?.records || [];
-  if (!rows.length) return `<div class="card empty">Chưa có dữ liệu logbook hôm nay.</div>`;
-  return `
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Giờ</th><th>Thiết bị</th><th>Nhiệt min/max</th><th>Ẩm KK min/max</th><th>Không khí min/max</th><th>Đất min/max</th></tr></thead>
-        <tbody>${rows.map((r) => `
-          <tr>
-            <td>${escapeHtml(r.periodStartLocal || r.localTime || "")}</td>
-            <td>${escapeHtml(r.deviceName || r.deviceKey || "")}</td>
-            <td>${fmt(r.minTemperature, "°C")} / ${fmt(r.maxTemperature, "°C")}</td>
-            <td>${fmt(r.minHumidity, "%")} / ${fmt(r.maxHumidity, "%")}</td>
-            <td>${fmt(r.minAirQuality, "ppm")} / ${fmt(r.maxAirQuality, "ppm")}</td>
-            <td>${fmt(r.minSoilMoisture, "%")} / ${fmt(r.maxSoilMoisture, "%")}</td>
-          </tr>
-        `).join("")}</tbody>
-      </table>
-    </div>
-  `;
-}
-
-function pumpLogsTable() {
-  if (!state.pumpLogs.length) return `<div class="card empty">Chưa có log máy bơm.</div>`;
-  return `
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Thời gian</th><th>Relay</th><th>Trạng thái</th><th>Nguồn</th><th>Người thao tác</th></tr></thead>
-        <tbody>${state.pumpLogs.map((r) => `
-          <tr><td>${escapeHtml(r.localTime || r.timestamp || "")}</td><td>${escapeHtml(r.relayKey || "")}</td><td>${r.value ? "Bật" : "Tắt"}</td><td>${escapeHtml(r.source || "")}</td><td>${escapeHtml(r.actorName || "")}</td></tr>
-        `).join("")}</tbody>
-      </table>
-    </div>
-  `;
-}
-
-function profileTemplate() {
-  return `
-    ${topbar("Tài khoản", "Thông tin phiên đăng nhập web")}
-    <section class="card pad grid two">
-      <div><span class="muted">Họ tên</span><h2>${escapeHtml(state.user?.fullName || "--")}</h2></div>
-      <div><span class="muted">Vai trò</span><h2>${escapeHtml(state.user?.role || "--")}</h2></div>
-      <div><span class="muted">Email</span><h2>${escapeHtml(state.user?.email || "--")}</h2></div>
-      <div><span class="muted">Số điện thoại</span><h2>${escapeHtml(state.user?.phoneNumber || "--")}</h2></div>
-    </section>
-  `;
-}
-
-function detailTemplate() {
-  const metric = metrics.find((x) => x.id === state.selectedMetric);
-  const keys = [...state.sensors.keys()];
-  const selected = state.selectedSensorKey || keys[0];
-  state.selectedSensorKey = selected;
-  const sensor = state.sensors.get(selected);
-  const history = state.histories.get(selected) || [];
-  const values = history.map((x) => historyValue(x, metric.id)).filter((x) => x !== null).map(Number);
-  const current = valueFor(sensor, metric.id);
-  return `
-    <aside class="panel">
-      <div class="topbar">
-        <div><h1>${metric.label}</h1><div class="eyebrow">${escapeHtml(sensorName(selected) || "")}</div></div>
-        <button class="btn icon" id="closeDrawer">×</button>
-      </div>
-      <section class="hero card" style="background:linear-gradient(135deg, ${metric.color}, #143b30);min-height:210px">
-        <div class="hero-row"><span class="icon-bubble" style="background:rgba(255,255,255,.18)">${metric.icon}</span><span class="pill">${statusFor(metric.id, current)}</span></div>
-        <div><h2>${fmt(current, metric.unit)}</h2><p>${escapeHtml(selected)}</p></div>
-      </section>
-      <section class="section">
-        <div class="section-head"><h2>Cảm biến</h2><span class="muted">${keys.length} thiết bị</span></div>
-        <div class="actions" style="justify-content:flex-start">${keys.map((key) => `<button class="btn ${key === selected ? "primary" : ""}" data-sensor="${escapeHtml(key)}">${escapeHtml(sensorName(key))}</button>`).join("")}</div>
-      </section>
-      <section class="section stat-strip">
-        <div class="stat"><span class="muted">Thấp nhất</span><b>${fmt(values.length ? Math.min(...values) : null, metric.unit)}</b></div>
-        <div class="stat"><span class="muted">Cao nhất</span><b>${fmt(values.length ? Math.max(...values) : null, metric.unit)}</b></div>
-      </section>
-      <section class="section card pad">
-        <div class="section-head"><h2>Biểu đồ 24 giờ</h2><span class="muted">${history.length} mẫu</span></div>
-        ${chartSvg(history, metric)}
-      </section>
-    </aside>
-  `;
-}
-
-function chartSvg(history, metric) {
-  const points = history.map((item) => ({ ts: parseTs(item.timestamp), value: historyValue(item, metric.id) }))
-    .filter((x) => x.ts && x.value !== null)
-    .sort((a, b) => a.ts - b.ts)
-    .slice(-120);
-  if (!points.length) return `<div class="chart empty">Đang thu thập dữ liệu...</div>`;
-  const w = 720, h = 250, p = 28;
-  const minY = metric.id === "temperature" ? 10 : 0;
-  const maxY = Math.max(metric.max, ...points.map((x) => Number(x.value)));
-  const minT = points[0].ts;
-  const maxT = points.at(-1).ts || minT + 1;
-  const xy = (pt) => {
-    const x = p + ((pt.ts - minT) / Math.max(1, maxT - minT)) * (w - p * 2);
-    const y = h - p - ((Number(pt.value) - minY) / Math.max(1, maxY - minY)) * (h - p * 2);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  var state = {
+    apiBase: readStorage(API_KEY) || API_BASE,
+    token: readStorage(TOKEN_KEY),
+    user: null,
+    tab: "home",
+    loading: false,
+    error: "",
+    assigned: [],
+    sensors: {},
+    histories: {},
+    pump: null,
+    pumpLogs: [],
+    logbook: null,
+    detailMetric: null,
+    detailSensor: null,
+    schedule: null
   };
-  const poly = points.map(xy).join(" ");
-  return `
-    <svg class="chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="Biểu đồ ${metric.label}">
-      <polyline points="${poly}" fill="none" stroke="${metric.color}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"></polyline>
-      ${points.map((pt, i) => i % Math.ceil(points.length / 16) === 0 ? `<circle cx="${xy(pt).split(",")[0]}" cy="${xy(pt).split(",")[1]}" r="3" fill="${metric.color}"><title>${fmt(pt.value, metric.unit)}</title></circle>` : "").join("")}
-    </svg>
-  `;
-}
 
-function criticalMessage() {
-  for (const sensor of state.sensors.values()) {
-    const temp = valueFor(sensor, "temperature");
-    const hum = valueFor(sensor, "humidity");
-    const air = valueFor(sensor, "airQuality");
-    const soil = valueFor(sensor, "soilMoisture");
-    if (temp > 35) return "Nhiệt độ rất cao, cần kiểm tra nhà nấm ngay.";
-    if (temp < 16) return "Nhiệt độ quá thấp, cần kiểm tra hệ thống.";
-    if (hum !== null && (hum < 70 || hum > 96)) return "Độ ẩm không khí bất thường.";
-    if (air > 1000) return "Chất lượng không khí rất xấu.";
-    if (soil !== null && soil < 30) return "Độ ẩm đất thấp.";
+  var metrics = [
+    { id: "temperature", title: "Nhiệt độ", unit: "°C", icon: "T", color: "var(--coral)", max: 45 },
+    { id: "humidity", title: "Độ ẩm không khí", unit: "%", icon: "H", color: "var(--sky)", max: 100 },
+    { id: "airQuality", title: "Không khí", unit: "ppm", icon: "A", color: "var(--leaf)", max: 3000 },
+    { id: "soilMoisture", title: "Độ ẩm đất", unit: "%", icon: "S", color: "var(--leaf)", max: 100 }
+  ];
+
+  var app = document.getElementById("app");
+
+  function readStorage(key) {
+    try { return localStorage.getItem(key) || ""; } catch (error) { return ""; }
   }
-  return "";
-}
 
-function statusFor(kind, value) {
-  if (value === null || value === undefined) return "Chưa có dữ liệu";
-  if (kind === "temperature") {
-    if (value > 35) return "Khẩn cấp";
-    if (value > 30) return "Cảnh báo";
-    if (value < 16) return "Quá thấp";
-    return "Trong ngưỡng tốt";
+  function writeStorage(key, value) {
+    try { localStorage.setItem(key, value); } catch (error) {}
   }
-  if (kind === "airQuality") {
-    if (value <= 150) return "Tốt";
-    if (value <= 300) return "Trung bình";
-    if (value <= 1000) return "Kém";
-    return "Rất kém";
+
+  function removeStorage(key) {
+    try { localStorage.removeItem(key); } catch (error) {}
   }
-  return "Đang ghi nhận";
-}
 
-function latestUpdateLabel() {
-  const stamps = [...state.sensors.values()].map((s) => parseTs(s.timestamp)).filter(Boolean);
-  if (!stamps.length) return "Chưa có dữ liệu";
-  const diff = Math.max(0, Date.now() - Math.max(...stamps));
-  if (diff < 60000) return "vừa xong";
-  if (diff < 3600000) return `${Math.floor(diff / 60000)} phút trước`;
-  return `${Math.floor(diff / 3600000)} giờ trước`;
-}
-
-function isOnline(sensor) {
-  const ts = parseTs(sensor?.timestamp);
-  return ts && Math.abs(Date.now() - ts) <= 2 * 60 * 1000;
-}
-
-function parseTs(raw) {
-  if (!raw) return null;
-  const n = Number(raw);
-  if (Number.isFinite(n)) return n < 1_000_000_000_000 ? n * 1000 : n;
-  const parsed = Date.parse(String(raw).replace(" ", "T"));
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c]));
-}
-
-function logout(renderNow = true) {
-  localStorage.removeItem(TOKEN_KEY);
-  state.token = "";
-  state.user = null;
-  if (renderNow) render();
-}
-
-function render() {
-  if (!state.token) {
-    app.innerHTML = loginTemplate();
-    bindLogin();
-    return;
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, function (char) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char];
+    });
   }
-  const content = state.loading
-    ? `${topbar("Đang tải", "Đang lấy dữ liệu từ backend")}<div class="card empty">Vui lòng chờ...</div>`
-    : state.view === "devices"
-      ? devicesTemplate()
-      : state.view === "logbook"
-        ? logbookTemplate()
-        : state.view === "profile"
-          ? profileTemplate()
-          : homeTemplate();
-  app.innerHTML = shellTemplate(content);
-  bindApp();
-}
 
-function bindLogin() {
-  document.querySelector("#loginForm")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    state.apiBase = String(form.get("apiBase")).replace(/\/$/, "");
-    localStorage.setItem(API_KEY, state.apiBase);
-    state.error = "";
-    try {
-      const session = await api("/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ identifier: form.get("identifier"), password: form.get("password") })
+  function last(items) {
+    return items.length ? items[items.length - 1] : null;
+  }
+
+  function firstNumber(values) {
+    for (var i = 0; i < values.length; i += 1) {
+      var value = values[i];
+      if (value !== null && value !== undefined && value !== "" && !Number.isNaN(Number(value))) {
+        return Number(value);
+      }
+    }
+    return null;
+  }
+
+  function average(a, b) {
+    if (a === null || a === undefined || b === null || b === undefined) return null;
+    return (Number(a) + Number(b)) / 2;
+  }
+
+  function formatValue(value, unit) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+    var number = Number(value);
+    var text = Math.abs(number) >= 100 ? number.toFixed(0) : number.toFixed(1);
+    return text + (unit ? " " + unit : "");
+  }
+
+  function api(path, options) {
+    options = options || {};
+    var headers = options.headers || {};
+    headers["Content-Type"] = headers["Content-Type"] || "application/json";
+    if (state.token) headers.Authorization = "Bearer " + state.token;
+    return fetch(state.apiBase + path, {
+      method: options.method || "GET",
+      headers: headers,
+      body: options.body
+    }).then(function (response) {
+      if (response.ok) {
+        if (response.status === 204) return null;
+        return response.json();
+      }
+      return response.text().then(function (text) {
+        var message = "HTTP " + response.status;
+        try {
+          var json = JSON.parse(text);
+          message = json.message || message;
+        } catch (error) {
+          if (text) message = text;
+        }
+        throw new Error(message);
       });
-      state.token = session.token;
-      localStorage.setItem(TOKEN_KEY, state.token);
-      await loadInitial();
-    } catch (err) {
-      state.error = err.message;
-      render();
-    }
-  });
-}
+    });
+  }
 
-function bindApp() {
-  document.querySelectorAll("[data-view]").forEach((el) => el.addEventListener("click", () => {
-    state.view = el.dataset.view;
-    state.selectedMetric = null;
-    render();
-  }));
-  document.querySelector("#refreshBtn")?.addEventListener("click", refresh);
-  document.querySelector("#logoutBtn")?.addEventListener("click", () => logout());
-  document.querySelector("#pumpSwitch")?.addEventListener("click", togglePump);
-  document.querySelector("#generateLogbook")?.addEventListener("click", async () => {
-    state.logbook = await api("/logbooks/today/generate", { method: "POST" });
-    render();
-  });
-  document.querySelectorAll("[data-metric]").forEach((el) => el.addEventListener("click", () => {
-    state.selectedMetric = el.dataset.metric;
-    state.selectedSensorKey = [...state.sensors.keys()][0] || null;
-    render();
-  }));
-  document.querySelector("#closeDrawer")?.addEventListener("click", () => {
-    state.selectedMetric = null;
-    render();
-  });
-  document.querySelector("#drawer")?.addEventListener("click", (event) => {
-    if (event.target.id === "drawer") {
-      state.selectedMetric = null;
-      render();
+  function metricValue(sensor, kind) {
+    if (!sensor) return null;
+    if (kind === "temperature") {
+      return firstNumber([sensor.temperature, average(sensor.groundTemperature, sensor.topTemperature), sensor.groundTemperature, sensor.topTemperature]);
     }
-  });
-  document.querySelectorAll("[data-sensor]").forEach((el) => el.addEventListener("click", () => {
-    state.selectedSensorKey = el.dataset.sensor;
-    render();
-  }));
-}
+    if (kind === "humidity") {
+      return firstNumber([sensor.humidity, sensor.topHumidity, average(sensor.groundHumidity, sensor.topHumidity), sensor.groundHumidity]);
+    }
+    if (kind === "airQuality") {
+      return firstNumber([sensor.airQuality, sensor.air_quality]);
+    }
+    return firstNumber([sensor.soilMoisture, sensor.soil_moisture, sensor.groundHumidity]);
+  }
 
-render();
-if (state.token) loadInitial();
+  function historyValue(item, kind) {
+    if (!item) return null;
+    if (kind === "temperature") {
+      return firstNumber([item.temperature, average(item.ground_temperature, item.top_temperature), item.groundTemperature, item.topTemperature]);
+    }
+    if (kind === "humidity") {
+      return firstNumber([item.humidity, item.top_humidity, average(item.ground_humidity, item.top_humidity), item.groundHumidity]);
+    }
+    if (kind === "airQuality") {
+      return firstNumber([item.air_quality, item.airQuality]);
+    }
+    return firstNumber([item.soil_moisture, item.soilMoisture, item.ground_humidity, item.groundHumidity]);
+  }
+
+  function parseTime(raw) {
+    if (!raw) return null;
+    var number = Number(raw);
+    if (Number.isFinite(number)) return number < 1000000000000 ? number * 1000 : number;
+    var parsed = Date.parse(String(raw).replace(" ", "T"));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function isPump(device) {
+    var text = ((device.deviceType || "") + " " + (device.deviceKey || "") + " " + (device.deviceName || "")).toLowerCase();
+    return text.indexOf("pump") >= 0 || text.indexOf("bom") >= 0 || text.indexOf("bơm") >= 0;
+  }
+
+  function assignedSensors() {
+    return state.assigned.filter(function (item) { return !isPump(item); });
+  }
+
+  function sensorKeys() {
+    return Object.keys(state.sensors).sort();
+  }
+
+  function sensorName(key) {
+    var assigned = state.assigned.find(function (item) { return item.deviceKey === key; });
+    var sensor = state.sensors[key];
+    return (assigned && assigned.deviceName) || (sensor && (sensor.deviceName || sensor.device_name)) || key;
+  }
+
+  function pumpAssignment() {
+    return state.assigned.find(isPump) || null;
+  }
+
+  function statusText(kind, value) {
+    if (value === null || value === undefined) return "Chưa có dữ liệu";
+    if (kind === "temperature") {
+      if (value > 35) return "Khẩn cấp";
+      if (value > 30) return "Cảnh báo";
+      if (value < 16) return "Quá thấp";
+      return "Trong ngưỡng tốt";
+    }
+    if (kind === "airQuality") {
+      if (value <= 150) return "Tốt";
+      if (value <= 300) return "Trung bình";
+      if (value <= 1000) return "Kém";
+      return "Rất kém";
+    }
+    return "Đang ghi nhận";
+  }
+
+  function latestUpdate() {
+    var values = sensorKeys().map(function (key) { return parseTime(state.sensors[key].timestamp); }).filter(Boolean);
+    if (!values.length) return "Chưa có dữ liệu";
+    var diff = Date.now() - Math.max.apply(Math, values);
+    if (diff < 60000) return "vừa xong";
+    if (diff < 3600000) return Math.floor(diff / 60000) + " phút trước";
+    return Math.floor(diff / 3600000) + " giờ trước";
+  }
+
+  function onlineCount() {
+    return sensorKeys().filter(function (key) {
+      var timestamp = parseTime(state.sensors[key].timestamp);
+      return timestamp && Math.abs(Date.now() - timestamp) < 120000;
+    }).length;
+  }
+
+  function criticalMessage() {
+    var keys = sensorKeys();
+    for (var i = 0; i < keys.length; i += 1) {
+      var sensor = state.sensors[keys[i]];
+      var temp = metricValue(sensor, "temperature");
+      var hum = metricValue(sensor, "humidity");
+      var air = metricValue(sensor, "airQuality");
+      var soil = metricValue(sensor, "soilMoisture");
+      if (temp !== null && temp > 35) return "Nhiệt độ rất cao, cần kiểm tra nhà nấm ngay.";
+      if (temp !== null && temp < 16) return "Nhiệt độ quá thấp, cần kiểm tra hệ thống.";
+      if (hum !== null && (hum < 70 || hum > 96)) return "Độ ẩm không khí bất thường.";
+      if (air !== null && air > 1000) return "Chất lượng không khí rất xấu.";
+      if (soil !== null && soil < 30) return "Độ ẩm đất thấp.";
+    }
+    return "";
+  }
+
+  function navMarkup() {
+    var items = [
+      ["home", "Home"],
+      ["sensors", "Cảm biến"],
+      ["control", "Điều khiển"],
+      ["logbook", "Logbook"],
+      ["profile", "Tài khoản"]
+    ];
+    return items.map(function (item) {
+      return '<button class="' + (state.tab === item[0] ? "active" : "") + '" data-tab="' + item[0] + '">' + item[1] + "</button>";
+    }).join("");
+  }
+
+  function topbar(title, subtitle) {
+    return '' +
+      '<div class="topbar">' +
+      '<div><h1>' + title + '</h1><div class="eyebrow">' + subtitle + '</div></div>' +
+      '<div class="actions">' +
+      '<button class="btn" data-action="refresh">Làm mới</button>' +
+      '<button class="btn" data-action="logout">Đăng xuất</button>' +
+      '</div></div>' +
+      (state.error ? '<p class="error-text">' + escapeHtml(state.error) + '</p>' : '');
+  }
+
+  function loginView() {
+    return '' +
+      '<main class="login">' +
+      '<section class="login-card card">' +
+      '<div class="login-art">' +
+      '<div class="brand"><div class="brand-mark">M</div><span>Mushtio</span></div>' +
+      '<div><h1>Dashboard trang trại nấm IoT</h1><p style="margin-top:14px;color:rgba(255,255,255,.84);font-weight:850">Web quản lý tách riêng mobile, dùng API backend và chỉ hiển thị thiết bị được admin gán.</p></div>' +
+      '<div class="hero-stats"><div class="hero-chip"><span>Cảm biến</span><b>Chi tiết như app</b></div><div class="hero-chip"><span>Logbook</span><b>Min / Max theo giờ</b></div></div>' +
+      '</div>' +
+      '<form class="login-form form" id="loginForm">' +
+      '<div><h2>Đăng nhập</h2><p class="muted" style="margin-top:6px">Quản lý trang trại IoT của bạn</p></div>' +
+      '<div class="field"><label>Email hoặc số điện thoại</label><input name="identifier" autocomplete="username" required></div>' +
+      '<div class="field"><label>Mật khẩu</label><input name="password" type="password" autocomplete="current-password" required></div>' +
+      '<div class="field"><label>API base URL</label><input name="apiBase" value="' + escapeHtml(state.apiBase) + '" required></div>' +
+      '<button class="btn primary" type="submit">' + (state.loading ? "Đang đăng nhập..." : "Đăng nhập") + '</button>' +
+      (state.error ? '<p class="error-text">' + escapeHtml(state.error) + '</p>' : '') +
+      '</form>' +
+      '</section></main>';
+  }
+
+  function shell(content) {
+    return '' +
+      '<div class="app-shell">' +
+      '<aside class="sidebar"><div class="brand"><div class="brand-mark">M</div><span>Mushtio</span></div><nav class="nav">' + navMarkup() + '</nav><div class="sidebar-footer">API: ' + escapeHtml(state.apiBase) + '</div></aside>' +
+      '<main class="content">' + content + '</main>' +
+      '<nav class="mobile-nav">' + navMarkup() + '</nav>' +
+      '</div>' +
+      detailDrawer();
+  }
+
+  function homeView() {
+    var nameParts = ((state.user && state.user.fullName) || "nhà vườn").trim().split(/\s+/);
+    var name = last(nameParts) || "nhà vườn";
+    var alert = criticalMessage();
+    return topbar("Chào, " + escapeHtml(name), "Dashboard trang trại nấm IoT") +
+      '<section class="hero card ' + (alert ? "alert" : "") + '">' +
+      '<div class="hero-head"><div class="bubble">IoT</div><span class="pill"><span class="dot"></span>' + (alert ? "Cần xử lý" : onlineCount() + " online") + '</span></div>' +
+      '<div><h2>' + (alert ? "Có cảnh báo" : "Trang trại ổn định") + '</h2><p>' + escapeHtml(alert || (sensorKeys().length + " cảm biến đang được theo dõi")) + '</p>' +
+      '<div class="hero-stats"><div class="hero-chip"><span>Cảm biến</span><b>' + sensorKeys().length + ' thiết bị</b></div><div class="hero-chip"><span>Cập nhật</span><b>' + latestUpdate() + '</b></div></div></div></section>' +
+      '<section class="section"><div class="section-head"><h2>Dữ liệu cảm biến</h2><span class="muted">Bấm để xem chi tiết</span></div><div class="grid four">' + metrics.map(metricCard).join("") + '</div></section>' +
+      '<section class="section grid two">' + pumpCard() + logbookSummaryCard() + '</section>' +
+      '<section class="section"><div class="section-head"><h2>Thiết bị được gán</h2><span class="muted">' + state.assigned.length + ' thiết bị</span></div>' + devicesGrid(false) + '</section>';
+  }
+
+  function metricCard(metric) {
+    var values = sensorKeys().map(function (key) { return metricValue(state.sensors[key], metric.id); }).filter(function (value) { return value !== null; });
+    var value = values.length ? values[values.length - 1] : null;
+    return '' +
+      '<button class="metric-card card" data-metric="' + metric.id + '">' +
+      '<span class="bubble" style="background:' + metric.color + '">' + metric.icon + '</span>' +
+      '<span><span class="metric-value" style="color:' + metric.color + '">' + formatValue(value, metric.unit) + '</span><h3>' + metric.title + '</h3><small>' + statusText(metric.id, value) + '</small></span>' +
+      '</button>';
+  }
+
+  function pumpCard() {
+    var assignment = pumpAssignment();
+    var on = Boolean(state.pump && state.pump.relay2);
+    return '' +
+      '<article class="wide-card card pad"><span class="bubble" style="background:' + (on ? "var(--leaf)" : "var(--muted)") + '">P</span>' +
+      '<div class="grow"><h3>Máy bơm</h3><span class="metric-value" style="font-size:20px;color:' + (on ? "var(--leaf)" : "var(--muted)") + '">' + (assignment ? (on ? "Đang chạy" : "Đang nghỉ") : "Chưa gán") + '</span>' +
+      '<p class="muted">' + escapeHtml(assignment ? (assignment.deviceName || assignment.deviceKey) : "Admin chưa gán máy bơm") + '</p></div>' +
+      '<button class="switch ' + (on ? "on" : "") + '" data-action="toggle-pump" ' + (assignment ? "" : "disabled") + '><span></span></button></article>';
+  }
+
+  function logbookSummaryCard() {
+    var count = state.logbook && state.logbook.records ? state.logbook.records.length : 0;
+    return '' +
+      '<article class="wide-card card pad"><span class="bubble" style="background:var(--violet)">L</span><div class="grow"><h3>Logbook điện tử</h3><span class="metric-value" style="font-size:20px;color:var(--violet)">' + count + ' dòng hôm nay</span><p class="muted">Min / max theo từng khung giờ</p></div><button class="btn icon" data-tab="logbook">›</button></article>';
+  }
+
+  function sensorsView() {
+    return topbar("Cảm biến", "Chi tiết từng loại dữ liệu giống luồng mobile") +
+      '<section class="hero card"><div class="hero-head"><div class="bubble">S</div><span class="pill">' + sensorKeys().length + ' cảm biến</span></div><div><h2>Dữ liệu môi trường</h2><p>Bấm từng chỉ số để mở panel chi tiết, biểu đồ và thống kê thấp/cao.</p></div></section>' +
+      '<section class="section"><div class="grid four">' + metrics.map(metricCard).join("") + '</div></section>' +
+      '<section class="section"><div class="section-head"><h2>Danh sách cảm biến</h2><span class="muted">Theo thiết bị được gán</span></div>' + sensorList() + '</section>';
+  }
+
+  function sensorList() {
+    var keys = sensorKeys();
+    if (!keys.length) return '<div class="card empty">Chưa có cảm biến được gán cho tài khoản.</div>';
+    return '<div class="grid three">' + keys.map(function (key) {
+      var sensor = state.sensors[key];
+      return '<article class="device-tile card pad"><span class="bubble">S</span><div><h3>' + escapeHtml(sensorName(key)) + '</h3><p class="muted">' + escapeHtml(key) + '</p><p class="muted">Nhiệt ' + formatValue(metricValue(sensor, "temperature"), "°C") + ' · Ẩm đất ' + formatValue(metricValue(sensor, "soilMoisture"), "%") + '</p></div></article>';
+    }).join("") + '</div>';
+  }
+
+  function devicesGrid(expanded) {
+    var items = state.assigned.length ? state.assigned : sensorKeys().map(function (key) {
+      return { deviceKey: key, deviceName: sensorName(key), deviceType: "sensor" };
+    });
+    if (!items.length) return '<div class="card empty">Chưa có thiết bị được gán. Vui lòng nhờ admin gán thiết bị.</div>';
+    var visible = expanded ? items : items.slice(0, 4);
+    return '<div class="grid four">' + visible.map(function (item) {
+      return '<article class="device-tile card pad"><span class="bubble">' + (isPump(item) ? "P" : "S") + '</span><div><h3>' + escapeHtml(item.deviceName || item.deviceKey) + '</h3><p class="muted">' + escapeHtml(item.deviceType || "device") + ' · ' + escapeHtml(item.deviceKey) + '</p></div></article>';
+    }).join("") + '</div>';
+  }
+
+  function controlView() {
+    var assignment = pumpAssignment();
+    var on = Boolean(state.pump && state.pump.relay2);
+    if (!assignment) {
+      return topbar("Điều khiển máy bơm", "Tài khoản này chưa được gán máy bơm") + '<div class="card empty">Admin chưa gán máy bơm cho tài khoản.</div>';
+    }
+    return topbar("Điều khiển máy bơm", on ? "Hệ thống đang tưới" : "Hệ thống đang chờ") +
+      '<section class="hero card" style="background:linear-gradient(135deg,' + (on ? "var(--deep),var(--leaf)" : "#1b2530,#51606d") + ')"><div class="hero-head"><div class="bubble">P</div><span class="pill">' + (on ? "Đang chạy" : "Đang nghỉ") + '</span></div><div><h2>' + (on ? "ON" : "OFF") + '</h2><p>' + escapeHtml(assignment.deviceName || assignment.deviceKey) + '</p><div class="hero-stats"><div class="hero-chip"><span>Lần thao tác cuối</span><b>' + escapeHtml((state.pump && state.pump.lastActionLocal) || "Chưa có") + '</b></div><div class="hero-chip"><span>Chế độ</span><b>' + escapeHtml((state.pump && state.pump.lastActionSource) || "manual") + '</b></div></div></div></section>' +
+      '<section class="section grid two"><article class="card pad"><div class="section-head"><h2>Bật/tắt bơm</h2><button class="switch ' + (on ? "on" : "") + '" data-action="toggle-pump"><span></span></button></div><p class="muted">Điều khiển relay chính giống màn Control trên mobile.</p></article>' + scheduleCard() + '</section>' +
+      '<section class="section"><div class="section-head"><h2>Lịch sử hoạt động</h2><span class="muted">' + state.pumpLogs.length + ' dòng</span></div>' + pumpLogsTable() + '</section>';
+  }
+
+  function scheduleCard() {
+    var sensorOptions = sensorKeys().map(function (key) { return '<option value="' + escapeHtml(key) + '">' + escapeHtml(sensorName(key)) + '</option>'; }).join("");
+    return '' +
+      '<article class="card pad"><h2>Lịch tưới thông minh</h2><form class="form" id="scheduleForm" style="margin-top:14px">' +
+      '<div class="grid two"><div class="field"><label>Chu kỳ (phút)</label><input name="intervalMinutes" type="number" value="' + escapeHtml((state.schedule && state.schedule.intervalMinutes) || 180) + '"></div><div class="field"><label>Thời lượng (phút)</label><input name="durationMinutes" type="number" value="' + escapeHtml((state.schedule && state.schedule.durationMinutes) || 10) + '"></div></div>' +
+      '<div class="field"><label>Giờ bắt đầu</label><input name="startTime" value="' + escapeHtml((state.schedule && state.schedule.startTime) || "06:00") + '"></div>' +
+      '<div class="grid two"><div class="field"><label>Ngưỡng đất (%)</label><input name="soilMoistureThreshold" type="number" value="' + escapeHtml((state.schedule && state.schedule.soilMoistureThreshold) || 30) + '"></div><div class="field"><label>Cảm biến đất</label><select name="sensorKey">' + sensorOptions + '</select></div></div>' +
+      '<button class="btn primary" type="submit">Lưu lịch tưới</button></form></article>';
+  }
+
+  function pumpLogsTable() {
+    if (!state.pumpLogs.length) return '<div class="card empty">Chưa có lịch sử máy bơm.</div>';
+    return '<div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Relay</th><th>Trạng thái</th><th>Nguồn</th><th>Người thao tác</th></tr></thead><tbody>' + state.pumpLogs.map(function (log) {
+      return '<tr><td>' + escapeHtml(log.localTime || log.timestamp || "") + '</td><td>' + escapeHtml(log.relayKey || "") + '</td><td>' + (log.value ? "Bật" : "Tắt") + '</td><td>' + escapeHtml(log.source || "") + '</td><td>' + escapeHtml(log.actorName || "") + '</td></tr>';
+    }).join("") + '</tbody></table></div>';
+  }
+
+  function logbookView() {
+    return topbar("Logbook điện tử", "Giá trị thấp nhất và cao nhất theo giờ") +
+      '<section class="section"><div class="actions" style="justify-content:flex-start"><button class="btn primary" data-action="generate-logbook">Tạo lại hôm nay</button><a class="btn" href="' + escapeHtml(state.apiBase) + '/logbooks/today/csv" target="_blank" rel="noreferrer">Tải CSV</a></div></section>' +
+      '<section class="section">' + logbookTable() + '</section>';
+  }
+
+  function logbookTable() {
+    var rows = state.logbook && state.logbook.records ? state.logbook.records : [];
+    if (!rows.length) return '<div class="card empty">Chưa có dữ liệu logbook hôm nay.</div>';
+    return '<div class="table-wrap"><table><thead><tr><th>Giờ</th><th>Thiết bị</th><th>Nhiệt min/max</th><th>Ẩm KK min/max</th><th>Không khí min/max</th><th>Đất min/max</th></tr></thead><tbody>' + rows.map(function (row) {
+      return '<tr><td>' + escapeHtml(row.periodStartLocal || row.localTime || "") + '</td><td>' + escapeHtml(row.deviceName || row.deviceKey || "") + '</td><td>' + formatValue(row.minTemperature, "°C") + ' / ' + formatValue(row.maxTemperature, "°C") + '</td><td>' + formatValue(row.minHumidity, "%") + ' / ' + formatValue(row.maxHumidity, "%") + '</td><td>' + formatValue(row.minAirQuality, "ppm") + ' / ' + formatValue(row.maxAirQuality, "ppm") + '</td><td>' + formatValue(row.minSoilMoisture, "%") + ' / ' + formatValue(row.maxSoilMoisture, "%") + '</td></tr>';
+    }).join("") + '</tbody></table></div>';
+  }
+
+  function profileView() {
+    var user = state.user || {};
+    return topbar("Tài khoản", "Thông tin phiên đăng nhập") +
+      '<section class="grid two"><article class="card pad"><span class="muted">Họ tên</span><h2>' + escapeHtml(user.fullName || "--") + '</h2></article><article class="card pad"><span class="muted">Vai trò</span><h2>' + escapeHtml(user.role || "--") + '</h2></article><article class="card pad"><span class="muted">Email</span><h2>' + escapeHtml(user.email || "--") + '</h2></article><article class="card pad"><span class="muted">Số điện thoại</span><h2>' + escapeHtml(user.phoneNumber || "--") + '</h2></article></section>' +
+      '<section class="section"><h2>Thiết bị của tôi</h2><div style="margin-top:12px">' + devicesGrid(true) + '</div></section>';
+  }
+
+  function detailDrawer() {
+    if (!state.detailMetric) return '<div class="drawer" id="drawer"></div>';
+    var metric = metrics.find(function (item) { return item.id === state.detailMetric; }) || metrics[0];
+    var keys = sensorKeys();
+    var selected = state.detailSensor || keys[0] || "";
+    var sensor = state.sensors[selected];
+    var history = state.histories[selected] || [];
+    var current = metricValue(sensor, metric.id);
+    var values = history.map(function (item) { return historyValue(item, metric.id); }).filter(function (value) { return value !== null; });
+    var min = values.length ? Math.min.apply(Math, values) : null;
+    var max = values.length ? Math.max.apply(Math, values) : null;
+    return '<div class="drawer open" id="drawer"><aside class="panel">' +
+      '<div class="topbar"><div><h1>' + metric.title + '</h1><div class="eyebrow">' + escapeHtml(sensorName(selected)) + '</div></div><button class="btn icon" data-action="close-detail">×</button></div>' +
+      '<section class="hero card" style="background:linear-gradient(135deg,' + metric.color + ',#143b30)"><div class="hero-head"><div class="bubble">' + metric.icon + '</div><span class="pill">' + statusText(metric.id, current) + '</span></div><div><h2>' + formatValue(current, metric.unit) + '</h2><p>' + escapeHtml(selected) + '</p></div></section>' +
+      '<section class="section"><div class="section-head"><h2>Cảm biến</h2><span class="muted">' + keys.length + ' thiết bị</span></div><div class="actions" style="justify-content:flex-start">' + keys.map(function (key) { return '<button class="btn ' + (key === selected ? "primary" : "") + '" data-detail-sensor="' + escapeHtml(key) + '">' + escapeHtml(sensorName(key)) + '</button>'; }).join("") + '</div></section>' +
+      '<section class="section stat-strip"><div class="stat"><span class="muted">Thấp nhất</span><b>' + formatValue(min, metric.unit) + '</b></div><div class="stat"><span class="muted">Cao nhất</span><b>' + formatValue(max, metric.unit) + '</b></div></section>' +
+      '<section class="section card pad"><div class="section-head"><h2>Biểu đồ 24 giờ</h2><span class="muted">' + history.length + ' mẫu</span></div>' + chart(history, metric) + '</section>' +
+      '</aside></div>';
+  }
+
+  function chart(history, metric) {
+    var points = history.map(function (item) {
+      return { ts: parseTime(item.timestamp), value: historyValue(item, metric.id) };
+    }).filter(function (item) {
+      return item.ts && item.value !== null;
+    }).sort(function (a, b) {
+      return a.ts - b.ts;
+    }).slice(-120);
+    if (!points.length) return '<div class="chart empty">Đang thu thập dữ liệu...</div>';
+    var w = 720;
+    var h = 260;
+    var p = 28;
+    var minY = metric.id === "temperature" ? 10 : 0;
+    var maxY = Math.max.apply(Math, [metric.max].concat(points.map(function (item) { return Number(item.value); })));
+    var minT = points[0].ts;
+    var maxT = points[points.length - 1].ts || minT + 1;
+    function xy(point) {
+      var x = p + ((point.ts - minT) / Math.max(1, maxT - minT)) * (w - p * 2);
+      var y = h - p - ((Number(point.value) - minY) / Math.max(1, maxY - minY)) * (h - p * 2);
+      return [x.toFixed(1), y.toFixed(1)];
+    }
+    var poly = points.map(function (point) { return xy(point).join(","); }).join(" ");
+    return '<svg class="chart" viewBox="0 0 ' + w + ' ' + h + '"><polyline points="' + poly + '" fill="none" stroke="' + metric.color + '" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>';
+  }
+
+  function render() {
+    if (!state.token) {
+      app.innerHTML = loginView();
+      bind();
+      return;
+    }
+    var body = state.loading ? topbar("Đang tải", "Đang lấy dữ liệu từ backend") + '<div class="card empty">Vui lòng chờ...</div>' :
+      state.tab === "sensors" ? sensorsView() :
+      state.tab === "control" ? controlView() :
+      state.tab === "logbook" ? logbookView() :
+      state.tab === "profile" ? profileView() : homeView();
+    app.innerHTML = shell(body);
+    bind();
+  }
+
+  function bind() {
+    var loginForm = document.getElementById("loginForm");
+    if (loginForm) {
+      loginForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var form = new FormData(loginForm);
+        state.apiBase = String(form.get("apiBase") || API_BASE).replace(/\/$/, "");
+        writeStorage(API_KEY, state.apiBase);
+        state.loading = true;
+        state.error = "";
+        render();
+        api("/auth/login", {
+          method: "POST",
+          body: JSON.stringify({ identifier: form.get("identifier"), password: form.get("password") })
+        }).then(function (session) {
+          state.token = session.token || session.Token || "";
+          writeStorage(TOKEN_KEY, state.token);
+          return loadAll();
+        }).catch(function (error) {
+          state.error = error.message || "Đăng nhập thất bại";
+          state.loading = false;
+          render();
+        });
+      });
+    }
+
+    document.querySelectorAll("[data-tab]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        state.tab = button.getAttribute("data-tab");
+        state.detailMetric = null;
+        render();
+      });
+    });
+    document.querySelectorAll("[data-metric]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        state.detailMetric = button.getAttribute("data-metric");
+        state.detailSensor = sensorKeys()[0] || null;
+        render();
+      });
+    });
+    document.querySelectorAll("[data-detail-sensor]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        state.detailSensor = button.getAttribute("data-detail-sensor");
+        render();
+      });
+    });
+    var drawer = document.getElementById("drawer");
+    if (drawer) {
+      drawer.addEventListener("click", function (event) {
+        if (event.target === drawer) {
+          state.detailMetric = null;
+          render();
+        }
+      });
+    }
+    document.querySelectorAll("[data-action]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var action = button.getAttribute("data-action");
+        if (action === "logout") logout();
+        if (action === "refresh") loadAll();
+        if (action === "toggle-pump") togglePump();
+        if (action === "close-detail") { state.detailMetric = null; render(); }
+        if (action === "generate-logbook") generateLogbook();
+      });
+    });
+    var scheduleForm = document.getElementById("scheduleForm");
+    if (scheduleForm) {
+      scheduleForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        saveSchedule(new FormData(scheduleForm));
+      });
+    }
+  }
+
+  function logout() {
+    removeStorage(TOKEN_KEY);
+    state.token = "";
+    state.user = null;
+    render();
+  }
+
+  function loadAll() {
+    state.loading = true;
+    state.error = "";
+    render();
+    return api("/auth/me")
+      .then(function (user) {
+        state.user = user;
+        return api("/me/devices");
+      })
+      .then(function (devices) {
+        state.assigned = Array.isArray(devices) ? devices : [];
+        return loadSensors();
+      })
+      .then(loadPump)
+      .then(loadLogbook)
+      .catch(function (error) {
+        state.error = error.message || "Không tải được dữ liệu";
+        if (String(state.error).indexOf("401") >= 0) logout();
+      })
+      .then(function () {
+        state.loading = false;
+        render();
+      });
+  }
+
+  function loadSensors() {
+    var assigned = assignedSensors();
+    var keyPromise = assigned.length ? Promise.resolve(assigned.map(function (item) { return item.deviceKey; })) : api("/sensors");
+    return keyPromise.then(function (keys) {
+      keys = Array.isArray(keys) ? keys : [];
+      return Promise.all(keys.map(function (key) {
+        return api("/sensors/" + encodeURIComponent(key)).then(function (sensor) {
+          state.sensors[key] = sensor;
+          return loadHistory(key);
+        }).catch(function () {});
+      }));
+    });
+  }
+
+  function loadHistory(key) {
+    var to = Date.now();
+    var from = to - 24 * 60 * 60 * 1000;
+    return api("/sensors/" + encodeURIComponent(key) + "/history?from=" + from + "&to=" + to).then(function (rows) {
+      state.histories[key] = Array.isArray(rows) ? rows : [];
+    }).catch(function () {
+      state.histories[key] = [];
+    });
+  }
+
+  function loadPump() {
+    var pump = pumpAssignment();
+    if (!pump) {
+      state.pump = null;
+      state.pumpLogs = [];
+      state.schedule = null;
+      return Promise.resolve();
+    }
+    return api("/devices/" + encodeURIComponent(pump.deviceKey)).then(function (pumpState) {
+      state.pump = pumpState;
+    }).catch(function () {
+      state.pump = null;
+    }).then(function () {
+      return api("/devices/" + encodeURIComponent(pump.deviceKey) + "/logs?limit=100").then(function (logs) {
+        state.pumpLogs = Array.isArray(logs) ? logs : [];
+      }).catch(function () {
+        state.pumpLogs = [];
+      });
+    }).then(function () {
+      return api("/devices/" + encodeURIComponent(pump.deviceKey) + "/schedule/" + RELAY_KEY).then(function (schedule) {
+        state.schedule = schedule;
+      }).catch(function () {
+        state.schedule = null;
+      });
+    });
+  }
+
+  function loadLogbook() {
+    return api("/logbooks/today").then(function (logbook) {
+      state.logbook = logbook;
+    }).catch(function () {
+      state.logbook = null;
+    });
+  }
+
+  function togglePump() {
+    var pump = pumpAssignment();
+    if (!pump) return;
+    var current = Boolean(state.pump && state.pump.relay2);
+    api("/devices/" + encodeURIComponent(pump.deviceKey) + "/relay/" + RELAY_KEY, {
+      method: "PUT",
+      body: JSON.stringify({ value: !current })
+    }).then(loadPump).then(render).catch(function (error) {
+      state.error = error.message || "Không bật/tắt được bơm";
+      render();
+    });
+  }
+
+  function saveSchedule(form) {
+    var pump = pumpAssignment();
+    if (!pump) return;
+    var payload = {
+      enabled: true,
+      intervalMinutes: Number(form.get("intervalMinutes") || 180),
+      durationMinutes: Number(form.get("durationMinutes") || 10),
+      startTime: String(form.get("startTime") || "06:00"),
+      smartEnabled: true,
+      sensorKey: String(form.get("sensorKey") || ""),
+      soilMoistureThreshold: Number(form.get("soilMoistureThreshold") || 30),
+      maxDurationMinutes: 10,
+      cooldownMinutes: 30
+    };
+    api("/devices/" + encodeURIComponent(pump.deviceKey) + "/schedule/" + RELAY_KEY, {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    }).then(function (schedule) {
+      state.schedule = schedule;
+      render();
+    }).catch(function (error) {
+      state.error = error.message || "Không lưu được lịch tưới";
+      render();
+    });
+  }
+
+  function generateLogbook() {
+    api("/logbooks/today/generate", { method: "POST", body: "{}" }).then(function (logbook) {
+      state.logbook = logbook;
+      render();
+    }).catch(function (error) {
+      state.error = error.message || "Không tạo được logbook";
+      render();
+    });
+  }
+
+  render();
+  if (state.token) loadAll();
+})();

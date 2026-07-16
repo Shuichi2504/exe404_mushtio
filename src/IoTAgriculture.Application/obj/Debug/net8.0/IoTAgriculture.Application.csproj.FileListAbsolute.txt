@@ -1,0 +1,16 @@
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\bin\Debug\net8.0\IoTAgriculture.Application.deps.json
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\bin\Debug\net8.0\IoTAgriculture.Application.dll
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\bin\Debug\net8.0\IoTAgriculture.Application.pdb
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\bin\Debug\net8.0\IoTAgriculture.Domain.dll
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\bin\Debug\net8.0\IoTAgriculture.Domain.pdb
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\obj\Debug\net8.0\IoTAgriculture.Application.csproj.AssemblyReference.cache
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\obj\Debug\net8.0\IoTAgriculture.Application.GeneratedMSBuildEditorConfig.editorconfig
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\obj\Debug\net8.0\IoTAgriculture.Application.AssemblyInfoInputs.cache
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\obj\Debug\net8.0\IoTAgriculture.Application.AssemblyInfo.cs
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\obj\Debug\net8.0\IoTAgriculture.Application.csproj.CoreCompileInputs.cache
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\obj\Debug\net8.0\IoTAgriculture.Application.sourcelink.json
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\obj\Debug\net8.0\IoTAgric.BEE18FFC.Up2Date
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\obj\Debug\net8.0\IoTAgriculture.Application.dll
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\obj\Debug\net8.0\refint\IoTAgriculture.Application.dll
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\obj\Debug\net8.0\IoTAgriculture.Application.pdb
+E:\Project_EXE401\exe401_iot\src\IoTAgriculture.Application\obj\Debug\net8.0\ref\IoTAgriculture.Application.dll
