@@ -24,10 +24,10 @@ jobs:
           dotnet-version: '8.x'
 
       - name: Build with dotnet
-        run: dotnet build IoTAgriculture/IoTAgriculture.csproj --configuration Release
+        run: dotnet build src/IoTAgriculture.API/IoTAgriculture.API.csproj --configuration Release
 
       - name: dotnet publish
-        run: dotnet publish IoTAgriculture/IoTAgriculture.csproj -c Release -o "${{env.DOTNET_ROOT}}/myapp" --no-build
+        run: dotnet publish src/IoTAgriculture.API/IoTAgriculture.API.csproj -c Release -o "${{env.DOTNET_ROOT}}/myapp" --no-build
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
