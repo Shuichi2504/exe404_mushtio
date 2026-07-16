@@ -56,7 +56,16 @@ app.UseSwagger();
     app.UseSwaggerUI();
 
 app.UseCors("FrontendCors");
+app.UseDefaultFiles();
+app.UseStaticFiles();
+app.MapGet("/api/health", () => Results.Ok(new
+{
+    status = "healthy",
+    app = "MUSHTIO1",
+    timestamp = DateTimeOffset.UtcNow
+}));
 app.MapControllers();
+app.MapFallbackToFile("index.html");
 
 await AuthSchemaInitializer.InitializeAsync(app.Services);
 

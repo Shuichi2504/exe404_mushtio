@@ -1,4 +1,4 @@
-const DEFAULT_API = "https://mushtio1-a2hcerawcpaqezb3.centralindia-01.azurewebsites.net/api";
+const DEFAULT_API = `${window.location.origin}/api`;
 const TOKEN_KEY = "mushtio.web.token";
 const API_KEY = "mushtio.web.api";
 
