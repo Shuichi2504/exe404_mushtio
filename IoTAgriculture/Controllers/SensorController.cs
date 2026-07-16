@@ -70,7 +70,7 @@ namespace IoTAgriculture.Controllers
             {
                 sensorCount = sensors.Count,
                 onlineCount,
-                latestUpdate = latestMs == 0 ? "Chua co du lieu" : RelativeTime(latestMs, nowMs),
+                latestUpdate = latestMs == 0 ? "Chưa có dữ liệu" : RelativeTime(latestMs, nowMs),
                 criticalMessage = CriticalMessage(avgTemp, avgHumidity, avgAirQuality, avgSoil),
                 temperature = Metric(avgTemp, TemperatureStatusText(avgTemp), TemperatureStatusLevel(avgTemp)),
                 humidity = Metric(avgHumidity, SensorStatus(avgHumidity, 75, 92), StatusLevel(avgHumidity, 75, 92)),
@@ -221,19 +221,19 @@ namespace IoTAgriculture.Controllers
         private static string RelativeTime(long timestampMs, long nowMs)
         {
             var diff = TimeSpan.FromMilliseconds(Math.Max(0, nowMs - timestampMs));
-            if (diff.TotalSeconds < 45) return "vua xong";
-            if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes} phut truoc";
-            if (diff.TotalHours < 24) return $"{(int)diff.TotalHours} gio truoc";
+            if (diff.TotalSeconds < 45) return "vừa xong";
+            if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes} phút trước";
+            if (diff.TotalHours < 24) return $"{(int)diff.TotalHours} giờ trước";
             var local = DateTimeOffset.FromUnixTimeMilliseconds(timestampMs).ToOffset(TimeSpan.FromHours(7));
             return local.ToString("dd/MM HH:mm");
         }
 
         private static string SensorStatus(double? value, double min, double max)
         {
-            if (value == null) return "Chua co du lieu";
-            if (value < min) return "Thap hon nguong";
-            if (value > max) return "Vuot nguong";
-            return "Trong nguong tot";
+            if (value == null) return "Chưa có dữ liệu";
+            if (value < min) return "Thấp hơn ngưỡng";
+            if (value > max) return "Vượt ngưỡng";
+            return "Trong ngưỡng tốt";
         }
 
         private static string StatusLevel(double? value, double min, double max)
@@ -245,11 +245,11 @@ namespace IoTAgriculture.Controllers
 
         private static string TemperatureStatusText(double? temp)
         {
-            if (temp == null) return "Chua co du lieu";
-            if (temp > 35) return "Khan cap: vuot 35C";
-            if (temp > 30) return "Canh bao: vuot 30C";
-            if (temp < 16) return "Nhiet do qua thap";
-            return "Trong nguong tot";
+            if (temp == null) return "Chưa có dữ liệu";
+            if (temp > 35) return "Khẩn cấp: vượt 35°C";
+            if (temp > 30) return "Cảnh báo: vượt 30°C";
+            if (temp < 16) return "Nhiệt độ quá thấp";
+            return "Trong ngưỡng tốt";
         }
 
         private static string TemperatureStatusLevel(double? temp)
@@ -262,11 +262,11 @@ namespace IoTAgriculture.Controllers
 
         private static string AirQualityStatus(double? value)
         {
-            if (value == null) return "Chua co du lieu";
-            if (value <= 150) return "Tot";
-            if (value <= 300) return "Trung binh";
-            if (value <= 1000) return "Kem";
-            return "Rat kem";
+            if (value == null) return "Chưa có dữ liệu";
+            if (value <= 150) return "Tốt";
+            if (value <= 300) return "Trung bình";
+            if (value <= 1000) return "Kém";
+            return "Rất kém";
         }
 
         private static string AirQualityLevel(double? value)
@@ -279,12 +279,12 @@ namespace IoTAgriculture.Controllers
 
         private static string? CriticalMessage(double? temp, double? humidity, double? airQuality, double? soil)
         {
-            if (temp > 35) return "Nhiet do rat cao, can kiem tra nha nam ngay.";
-            if (temp > 30) return "Nhiet do cao, can kiem tra nha nam.";
-            if (temp < 16) return "Nhiet do qua thap, can kiem tra he thong.";
-            if (humidity < 70 || humidity > 96) return "Do am khong khi bat thuong, can kiem tra thong gio.";
-            if (airQuality > 1000) return "Chat luong khong khi rat xau, can kiem tra thong gio ngay.";
-            if (soil < 30) return "Do am dat thap, nen kiem tra tuoi nuoc.";
+            if (temp > 35) return "Nhiệt độ rất cao, cần kiểm tra nhà nấm ngay.";
+            if (temp > 30) return "Nhiệt độ cao, cần kiểm tra nhà nấm.";
+            if (temp < 16) return "Nhiệt độ quá thấp, cần kiểm tra hệ thống.";
+            if (humidity < 70 || humidity > 96) return "Độ ẩm không khí bất thường, cần kiểm tra thông gió.";
+            if (airQuality > 1000) return "Chất lượng không khí rất xấu, cần kiểm tra thông gió ngay.";
+            if (soil < 30) return "Độ ẩm đất thấp, nên kiểm tra tưới nước.";
             return null;
         }
 

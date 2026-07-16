@@ -27,14 +27,22 @@ namespace IoTAgriculture.Services
             CancellationToken cancellationToken = default)
         {
             var host = _configuration["Email:Smtp:Host"];
-            var from = _configuration["Email:Smtp:From"];
             var username = _configuration["Email:Smtp:Username"];
             var password = _configuration["Email:Smtp:Password"];
+            var from = _configuration["Email:Smtp:From"];
+            if (string.IsNullOrWhiteSpace(from))
+            {
+                from = username;
+            }
+
             var port = int.TryParse(_configuration["Email:Smtp:Port"], out var parsedPort)
                 ? parsedPort
                 : 587;
 
-            if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(from))
+            if (string.IsNullOrWhiteSpace(host) ||
+                string.IsNullOrWhiteSpace(from) ||
+                string.IsNullOrWhiteSpace(username) ||
+                string.IsNullOrWhiteSpace(password))
             {
                 if (_environment.IsDevelopment())
                 {
@@ -42,7 +50,8 @@ namespace IoTAgriculture.Services
                     return;
                 }
 
-                throw new InvalidOperationException("Email SMTP configuration is missing.");
+                throw new InvalidOperationException(
+                    "Email SMTP configuration is missing. Configure Email:Smtp:Host, Username, Password and optionally From. For Gmail SMTP, use an App Password or OAuth refresh token flow; a Google OAuth client secret alone cannot send email.");
             }
 
             using var message = new MailMessage(
