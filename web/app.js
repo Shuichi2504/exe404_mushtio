@@ -250,7 +250,7 @@
       '<div><h2>Đăng nhập</h2><p class="muted" style="margin-top:6px">Quản lý trang trại IoT của bạn</p></div>' +
       '<div class="field"><label>Email hoặc số điện thoại</label><input name="identifier" autocomplete="username" required></div>' +
       '<div class="field"><label>Mật khẩu</label><input name="password" type="password" autocomplete="current-password" required></div>' +
-      '<div class="field"><label>API base URL</label><input name="apiBase" value="' + escapeHtml(state.apiBase) + '" required></div>' +
+      '<input type="hidden" name="apiBase" value="' + escapeHtml(state.apiBase) + '">' +
       '<button class="btn primary" type="submit">' + (state.loading ? "Đang đăng nhập..." : "Đăng nhập") + '</button>' +
       (state.error ? '<p class="error-text">' + escapeHtml(state.error) + '</p>' : '') +
       '</form>' +
