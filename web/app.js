@@ -1,10 +1,35 @@
 const DEFAULT_API = `${window.location.origin}/api`;
 const TOKEN_KEY = "mushtio.web.token";
 const API_KEY = "mushtio.web.api";
+const app = document.querySelector("#app");
+
+function storageGet(key) {
+  try {
+    return localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+
+function storageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {}
+}
+
+function lastItem(items) {
+  return items.length ? items[items.length - 1] : undefined;
+}
 
 const state = {
-  apiBase: localStorage.getItem(API_KEY) || DEFAULT_API,
-  token: localStorage.getItem(TOKEN_KEY) || "",
+  apiBase: storageGet(API_KEY) || DEFAULT_API,
+  token: storageGet(TOKEN_KEY),
   user: null,
   view: "home",
   assigned: [],
@@ -25,8 +50,6 @@ const metrics = [
   { id: "airQuality", label: "Không khí", unit: "ppm", icon: "〰", color: "var(--leaf)", max: 3000 },
   { id: "soilMoisture", label: "Độ ẩm đất", unit: "%", icon: "⌁", color: "var(--leaf)", max: 100 }
 ];
-
-const app = document.querySelector("#app");
 
 function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -228,7 +251,7 @@ function homeTemplate() {
   const alert = criticalMessage();
   const onlineCount = [...state.sensors.values()].filter(isOnline).length;
   return `
-    ${topbar("Chào ${escapeHtml((state.user?.fullName || "nhà vườn").split(" ").at(-1))}", "Dashboard trang trại nấm IoT")}
+    ${topbar("Chào ${escapeHtml(lastItem((state.user?.fullName || "nhà vườn").split(" ")))}", "Dashboard trang trại nấm IoT")}
     <section class="hero card ${alert ? "alert" : ""}">
       <div class="hero-row">
         <span class="icon-bubble">♧</span>
@@ -273,7 +296,7 @@ function topbar(title, subtitle) {
 
 function metricCard(metric) {
   const values = [...state.sensors.values()].map((x) => valueFor(x, metric.id)).filter((x) => x !== null);
-  const latest = values.length ? values.at(-1) : null;
+  const latest = values.length ? lastItem(values) : null;
   return `
     <button class="metric-card card" data-metric="${metric.id}">
       <span class="icon-bubble" style="background:${metric.color}">${metric.icon}</span>
@@ -447,7 +470,7 @@ function chartSvg(history, metric) {
   const minY = metric.id === "temperature" ? 10 : 0;
   const maxY = Math.max(metric.max, ...points.map((x) => Number(x.value)));
   const minT = points[0].ts;
-  const maxT = points.at(-1).ts || minT + 1;
+  const maxT = lastItem(points).ts || minT + 1;
   const xy = (pt) => {
     const x = p + ((pt.ts - minT) / Math.max(1, maxT - minT)) * (w - p * 2);
     const y = h - p - ((Number(pt.value) - minY) / Math.max(1, maxY - minY)) * (h - p * 2);
@@ -521,7 +544,7 @@ function escapeHtml(value) {
 }
 
 function logout(renderNow = true) {
-  localStorage.removeItem(TOKEN_KEY);
+  storageRemove(TOKEN_KEY);
   state.token = "";
   state.user = null;
   if (renderNow) render();
@@ -551,7 +574,7 @@ function bindLogin() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     state.apiBase = String(form.get("apiBase")).replace(/\/$/, "");
-    localStorage.setItem(API_KEY, state.apiBase);
+    storageSet(API_KEY, state.apiBase);
     state.error = "";
     try {
       const session = await api("/auth/login", {
@@ -559,7 +582,7 @@ function bindLogin() {
         body: JSON.stringify({ identifier: form.get("identifier"), password: form.get("password") })
       });
       state.token = session.token;
-      localStorage.setItem(TOKEN_KEY, state.token);
+      storageSet(TOKEN_KEY, state.token);
       await loadInitial();
     } catch (err) {
       state.error = err.message;
