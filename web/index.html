@@ -4,10 +4,29 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Mushtio Web</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260716-2" />
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="./app.js"></script>
+    <div id="app">
+      <main class="login-shell">
+        <section class="login-card card pad">
+          <h1>Mushtio Web</h1>
+          <p class="muted" style="margin-top:8px">Đang tải giao diện...</p>
+        </section>
+      </main>
+    </div>
+    <script>
+      window.addEventListener("error", function (event) {
+        var app = document.getElementById("app");
+        if (!app) return;
+        app.innerHTML =
+          '<main class="login-shell"><section class="login-card card pad">' +
+          '<h1>Không tải được web</h1>' +
+          '<p class="muted" style="margin-top:8px">Hãy refresh lại trang hoặc kiểm tra file app.js trên Azure.</p>' +
+          '<pre class="error">' + String(event.message || "Script error") + "</pre>" +
+          "</section></main>";
+      });
+    </script>
+    <script defer src="./app.js?v=20260716-2"></script>
   </body>
 </html>
