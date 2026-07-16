@@ -31,6 +31,54 @@ namespace IoTAgriculture.Controllers
             return Ok(keys);
         }
 
+        [HttpGet("summary")]
+        public async Task<IActionResult> GetSummary(CancellationToken cancellationToken)
+        {
+            var devices = await _firebase.GetAsync<Dictionary<string, JsonElement>>("devices", cancellationToken)
+                ?? new Dictionary<string, JsonElement>();
+
+            var sensors = devices
+                .Where(x => x.Value.ValueKind == JsonValueKind.Object && IsSensorPayload(x.Value))
+                .Select(x => new
+                {
+                    Key = x.Key,
+                    Json = x.Value,
+                    Timestamp = ReadTimestampValue(x.Value)
+                })
+                .ToList();
+
+            var avgTemp = Average(sensors.Select(x => ReadDouble(x.Json, "temperature")));
+            var avgHumidity = Average(sensors.Select(x => ReadDouble(x.Json, "humidity")));
+            var avgAirQuality = Average(sensors.Select(x =>
+                ReadDouble(x.Json, "air_quality") ?? ReadDouble(x.Json, "airQuality") ?? ReadDouble(x.Json, "air_quanlity")));
+            var avgSoil = Average(sensors.Select(x =>
+                ReadDouble(x.Json, "soil_moisture") ?? ReadDouble(x.Json, "soilMoisture")));
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var latestMs = sensors
+                .Select(x => NormalizeTimestamp(x.Timestamp, nowMs))
+                .Where(x => x.HasValue)
+                .Select(x => x!.Value)
+                .DefaultIfEmpty()
+                .Max();
+            var onlineCount = sensors.Count(x =>
+            {
+                var timestamp = NormalizeTimestamp(x.Timestamp, nowMs);
+                return timestamp.HasValue && Math.Abs(nowMs - timestamp.Value) <= TimeSpan.FromMinutes(2).TotalMilliseconds;
+            });
+
+            return Ok(new
+            {
+                sensorCount = sensors.Count,
+                onlineCount,
+                latestUpdate = latestMs == 0 ? "Chua co du lieu" : RelativeTime(latestMs, nowMs),
+                criticalMessage = CriticalMessage(avgTemp, avgHumidity, avgAirQuality, avgSoil),
+                temperature = Metric(avgTemp, TemperatureStatusText(avgTemp), TemperatureStatusLevel(avgTemp)),
+                humidity = Metric(avgHumidity, SensorStatus(avgHumidity, 75, 92), StatusLevel(avgHumidity, 75, 92)),
+                airQuality = Metric(avgAirQuality, AirQualityStatus(avgAirQuality), AirQualityLevel(avgAirQuality)),
+                soilMoisture = Metric(avgSoil, SensorStatus(avgSoil, 35, 75), StatusLevel(avgSoil, 35, 75))
+            });
+        }
+
         [HttpGet("{sensorKey}")]
         public async Task<IActionResult> GetSensorState(string sensorKey, CancellationToken cancellationToken)
         {
@@ -144,6 +192,100 @@ namespace IoTAgriculture.Controllers
                 ReadDouble(json, "topHumidity") != null ||
                 ReadDouble(json, "soil_moisture") != null ||
                 ReadDouble(json, "soilMoisture") != null;
+        }
+
+        private static object Metric(double? value, string status, string level)
+        {
+            return new
+            {
+                value,
+                displayValue = value == null ? "--" : value.Value.ToString("0.0"),
+                status,
+                level
+            };
+        }
+
+        private static double? Average(IEnumerable<double?> values)
+        {
+            var numbers = values.Where(x => x.HasValue).Select(x => x!.Value).ToList();
+            return numbers.Count == 0 ? null : Math.Round(numbers.Average(), 1);
+        }
+
+        private static long? NormalizeTimestamp(long? timestamp, long nowMs)
+        {
+            const long minValidEpochMs = 946684800000;
+            var maxFutureMs = nowMs + (long)TimeSpan.FromDays(1).TotalMilliseconds;
+            return timestamp is >= minValidEpochMs && timestamp <= maxFutureMs ? timestamp : null;
+        }
+
+        private static string RelativeTime(long timestampMs, long nowMs)
+        {
+            var diff = TimeSpan.FromMilliseconds(Math.Max(0, nowMs - timestampMs));
+            if (diff.TotalSeconds < 45) return "vua xong";
+            if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes} phut truoc";
+            if (diff.TotalHours < 24) return $"{(int)diff.TotalHours} gio truoc";
+            var local = DateTimeOffset.FromUnixTimeMilliseconds(timestampMs).ToOffset(TimeSpan.FromHours(7));
+            return local.ToString("dd/MM HH:mm");
+        }
+
+        private static string SensorStatus(double? value, double min, double max)
+        {
+            if (value == null) return "Chua co du lieu";
+            if (value < min) return "Thap hon nguong";
+            if (value > max) return "Vuot nguong";
+            return "Trong nguong tot";
+        }
+
+        private static string StatusLevel(double? value, double min, double max)
+        {
+            if (value == null) return "muted";
+            if (value < min || value > max) return "danger";
+            return value < min + 2 || value > max - 2 ? "warning" : "normal";
+        }
+
+        private static string TemperatureStatusText(double? temp)
+        {
+            if (temp == null) return "Chua co du lieu";
+            if (temp > 35) return "Khan cap: vuot 35C";
+            if (temp > 30) return "Canh bao: vuot 30C";
+            if (temp < 16) return "Nhiet do qua thap";
+            return "Trong nguong tot";
+        }
+
+        private static string TemperatureStatusLevel(double? temp)
+        {
+            if (temp == null) return "muted";
+            if (temp > 35 || temp < 16) return "danger";
+            if (temp > 30) return "warning";
+            return "normal";
+        }
+
+        private static string AirQualityStatus(double? value)
+        {
+            if (value == null) return "Chua co du lieu";
+            if (value <= 150) return "Tot";
+            if (value <= 300) return "Trung binh";
+            if (value <= 1000) return "Kem";
+            return "Rat kem";
+        }
+
+        private static string AirQualityLevel(double? value)
+        {
+            if (value == null) return "muted";
+            if (value <= 150) return "normal";
+            if (value <= 300) return "warning";
+            return value <= 1000 ? "warning" : "danger";
+        }
+
+        private static string? CriticalMessage(double? temp, double? humidity, double? airQuality, double? soil)
+        {
+            if (temp > 35) return "Nhiet do rat cao, can kiem tra nha nam ngay.";
+            if (temp > 30) return "Nhiet do cao, can kiem tra nha nam.";
+            if (temp < 16) return "Nhiet do qua thap, can kiem tra he thong.";
+            if (humidity < 70 || humidity > 96) return "Do am khong khi bat thuong, can kiem tra thong gio.";
+            if (airQuality > 1000) return "Chat luong khong khi rat xau, can kiem tra thong gio ngay.";
+            if (soil < 30) return "Do am dat thap, nen kiem tra tuoi nuoc.";
+            return null;
         }
 
         private static double? ReadDouble(JsonElement json, string name)

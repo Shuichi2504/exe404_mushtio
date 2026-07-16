@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mushtio IoT Web</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="app">
+    <section id="auth-view" class="auth-shell">
+      <div class="auth-hero">
+        <div class="brand-mark">M</div>
+        <p class="eyebrow">Mushtio IoT</p>
+        <h1>Dashboard trang trại nấm</h1>
+        <p class="hero-copy">Theo dõi cảm biến, điều khiển máy bơm, xem logbook và hỏi AI trực tiếp từ backend IoTAgriculture.</p>
+        <div class="hero-stats">
+          <span><strong>Realtime</strong>Cảm biến</span>
+          <span><strong>Relay</strong>Điều khiển</span>
+          <span><strong>AI</strong>Chẩn đoán</span>
+        </div>
+      </div>
+
+      <div class="auth-panel">
+        <div class="auth-card">
+          <div class="tabs" role="tablist">
+            <button id="login-tab" class="active" type="button">Đăng nhập</button>
+            <button id="register-tab" type="button">Đăng ký</button>
+          </div>
+
+          <form id="login-form" class="form">
+            <label>Email hoặc số điện thoại<input name="identifier" required autocomplete="username"></label>
+            <label>Mật khẩu<input name="password" type="password" required autocomplete="current-password"></label>
+            <button class="primary" type="submit">Đăng nhập</button>
+          </form>
+
+          <form id="register-form" class="form hidden">
+            <label>Họ tên<input name="fullName" required></label>
+            <label>Số điện thoại<input name="phoneNumber" required></label>
+            <label>Email<input name="email" type="email" required></label>
+            <div class="inline">
+              <label>Mã OTP<input name="code" maxlength="6" required></label>
+              <button id="send-code-btn" class="secondary" type="button">Gửi OTP</button>
+            </div>
+            <label>Địa chỉ<input name="address" required></label>
+            <label>Ngày sinh<input name="dateOfBirth" type="date" required></label>
+            <label>Mật khẩu<input name="password" type="password" minlength="6" required></label>
+            <button class="primary" type="submit">Tạo tài khoản</button>
+          </form>
+          <p id="auth-message" class="message" aria-live="polite"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="main-view" class="app-shell hidden">
+      <aside class="sidebar">
+        <div>
+          <div class="side-brand">
+            <div class="brand-mark small">M</div>
+            <div>
+              <strong>Mushtio</strong>
+              <span>Farm Console</span>
+            </div>
+          </div>
+          <nav class="nav-list" aria-label="Chức năng">
+            <button data-view="dashboard" class="nav active" type="button"><span class="nav-icon">D</span>Dashboard</button>
+            <button data-view="control" class="nav" type="button"><span class="nav-icon">P</span>Máy bơm</button>
+            <button data-view="devices" class="nav" type="button"><span class="nav-icon">S</span>Thiết bị</button>
+            <button data-view="logbook" class="nav" type="button"><span class="nav-icon">L</span>Logbook</button>
+            <button data-view="ai" class="nav" type="button"><span class="nav-icon">A</span>AI chat</button>
+            <button data-view="profile" class="nav" type="button"><span class="nav-icon">U</span>Tài khoản</button>
+            <button data-view="admin" class="nav admin-only hidden" type="button"><span class="nav-icon">Q</span>Admin</button>
+          </nav>
+        </div>
+        <button id="logout-btn" class="ghost" type="button">Đăng xuất</button>
+      </aside>
+
+      <section class="content">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Backend web console</p>
+            <h1 id="page-title">Dashboard</h1>
+          </div>
+          <div class="top-actions">
+            <button id="refresh-btn" class="icon-button" type="button" title="Tải lại dữ liệu">↻</button>
+            <div id="user-pill" class="pill"></div>
+          </div>
+        </header>
+
+        <section id="dashboard-view" class="view"></section>
+        <section id="control-view" class="view hidden"></section>
+        <section id="devices-view" class="view hidden"></section>
+        <section id="logbook-view" class="view hidden"></section>
+        <section id="ai-view" class="view hidden"></section>
+        <section id="profile-view" class="view hidden"></section>
+        <section id="admin-view" class="view hidden"></section>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

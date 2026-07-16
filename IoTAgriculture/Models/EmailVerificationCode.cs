@@ -24,6 +24,8 @@ namespace IoTAgriculture.Models
 
         public DateTime ExpiresAt { get; set; }
 
+        public DateTime? VerifiedAt { get; set; }
+
         public DateTime? UsedAt { get; set; }
     }
 }

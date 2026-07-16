@@ -30,7 +30,6 @@ builder.Services.AddScoped<IAlertService, AlertService>();
 builder.Services.AddScoped<ILogbookService, LogbookService>();
 builder.Services.AddHostedService<PumpScheduleBackgroundService>();
 builder.Services.AddSingleton<IFirebasePushNotificationService, FirebasePushNotificationService>();
-builder.Services.AddScoped<ChatService>();
 
 builder.Services.AddCors(options =>
 {
@@ -57,8 +56,10 @@ app.UseSwagger();
     app.UseSwaggerUI();
 
 app.UseCors("FrontendCors");
-app.MapControllers();
+app.UseDefaultFiles();
 app.UseStaticFiles();
+app.MapControllers();
+app.MapFallbackToFile("index.html");
 
 await AuthSchemaInitializer.InitializeAsync(app.Services);
 

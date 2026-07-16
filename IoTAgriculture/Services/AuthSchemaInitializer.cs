@@ -107,21 +107,6 @@ namespace IoTAgriculture.Services
                 END
                 """);
             await db.Database.ExecuteSqlRawAsync("""
-                IF OBJECT_ID(N'[ChatMessages]', N'U') IS NULL
-                BEGIN
-                    CREATE TABLE [ChatMessages] (
-                        [MessageId] uniqueidentifier NOT NULL CONSTRAINT [PK_ChatMessages] PRIMARY KEY,
-                        [UserId] uniqueidentifier NOT NULL,
-                        [Sender] nvarchar(50) NOT NULL,
-                        [MessageText] nvarchar(max) NULL,
-                        [ImageUrl] nvarchar(500) NULL,
-                        [CreatedAt] datetime2 NOT NULL,
-                        CONSTRAINT [FK_ChatMessages_Users_UserId] FOREIGN KEY ([UserId]) REFERENCES [Users] ([UserId]) ON DELETE CASCADE
-                    );
-                    CREATE INDEX [IX_ChatMessages_UserId_CreatedAt] ON [ChatMessages] ([UserId], [CreatedAt]);
-                END
-                """);
-            await db.Database.ExecuteSqlRawAsync("""
                 IF OBJECT_ID(N'[EmailVerificationCodes]', N'U') IS NULL
                 BEGIN
                     CREATE TABLE [EmailVerificationCodes] (
@@ -132,10 +117,17 @@ namespace IoTAgriculture.Services
                         [UserId] uniqueidentifier NULL,
                         [CreatedAt] datetime2 NOT NULL,
                         [ExpiresAt] datetime2 NOT NULL,
+                        [VerifiedAt] datetime2 NULL,
                         [UsedAt] datetime2 NULL
                     );
                     CREATE INDEX [IX_EmailVerificationCodes_Email_Purpose_Code]
                         ON [EmailVerificationCodes] ([Email], [Purpose], [Code]);
+                END
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                IF COL_LENGTH(N'[EmailVerificationCodes]', N'VerifiedAt') IS NULL
+                BEGIN
+                    ALTER TABLE [EmailVerificationCodes] ADD [VerifiedAt] datetime2 NULL;
                 END
                 """);
             await SeedAdminAsync(db);

@@ -1,6 +1,8 @@
 using IoTAgriculture.DTOs;
 using IoTAgriculture.Services;
+using IoTAgriculture.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 
 namespace IoTAgriculture.Controllers;
 
@@ -9,21 +11,22 @@ namespace IoTAgriculture.Controllers;
 public class AiController : ControllerBase
 {
     private readonly GeminiService _geminiService;
+    private readonly IFirebaseRtdbService _firebase;
     private readonly ILogger<AiController> _logger;
 
     public AiController(
         GeminiService geminiService,
+        IFirebaseRtdbService firebase,
         ILogger<AiController> logger)
     {
         _geminiService = geminiService;
+        _firebase = firebase;
         _logger = logger;
     }
 
     [HttpPost("chat")]
     [Consumes("multipart/form-data")]
-    public async Task<IActionResult> Chat(
-        [FromForm] ChatRequestDto request,
-        [FromServices] ChatService chatService)
+    public async Task<IActionResult> Chat([FromForm] ChatRequestDto request)
     {
         if (request.UserId == Guid.Empty)
         {
@@ -40,20 +43,14 @@ public class AiController : ControllerBase
             ? "Hay xem hinh anh nay va dua ra nhan xet."
             : request.Message.Trim();
 
-        await SaveMessageSafelyAsync(
-            chatService,
-            request.UserId,
-            "user",
-            message,
-            request.Image?.FileName);
-
         string answer;
         try
         {
+            var farmContext = await BuildFarmContextAsync(HttpContext.RequestAborted);
             answer = await _geminiService.AskAsync(
                 message,
                 request.Image,
-                request.FarmContext);
+                farmContext);
         }
         catch (Exception ex)
         {
@@ -68,52 +65,84 @@ public class AiController : ControllerBase
                 new { message = userMessage });
         }
 
-        await SaveMessageSafelyAsync(
-            chatService,
-            request.UserId,
-            "ai",
-            answer);
-
         return Ok(new ChatResponseDto { Answer = answer });
     }
 
-    [HttpGet("history/{userId}")]
-    public async Task<IActionResult> History(
-        Guid userId,
-        [FromServices] ChatService chatService)
+    private async Task<string> BuildFarmContextAsync(CancellationToken cancellationToken)
     {
-        var messages = await chatService.GetHistoryAsync(userId);
-        return Ok(messages);
+        var devices = await _firebase.GetAsync<Dictionary<string, JsonElement>>(
+            "devices",
+            cancellationToken) ?? new Dictionary<string, JsonElement>();
+        var sensors = devices
+            .Where(x => x.Value.ValueKind == JsonValueKind.Object && IsSensorPayload(x.Value))
+            .Select(x => x.Value)
+            .ToList();
+
+        if (sensors.Count == 0)
+        {
+            return "Chua co du lieu cam bien hien tai tu he thong backend.";
+        }
+
+        var avgTemp = Average(sensors.Select(x => ReadDouble(x, "temperature")));
+        var avgHumidity = Average(sensors.Select(x => ReadDouble(x, "humidity")));
+        var avgAirQuality = Average(sensors.Select(x =>
+            ReadDouble(x, "air_quality") ?? ReadDouble(x, "airQuality") ?? ReadDouble(x, "air_quanlity")));
+        var avgSoil = Average(sensors.Select(x =>
+            ReadDouble(x, "soil_moisture") ?? ReadDouble(x, "soilMoisture")));
+        var avgGroundHumidity = Average(sensors.Select(x =>
+            ReadDouble(x, "ground_humidity") ?? ReadDouble(x, "groundHumidity")));
+        var avgTopHumidity = Average(sensors.Select(x =>
+            ReadDouble(x, "top_humidity") ?? ReadDouble(x, "topHumidity")));
+
+        return string.Join('\n', new[]
+        {
+            $"So cam bien dang theo doi: {sensors.Count}",
+            $"Nhiet do trung binh: {FormatMetric(avgTemp, "C")}",
+            $"Do am khong khi trung binh: {FormatMetric(avgHumidity, "%")}",
+            $"Chat luong khong khi trung binh: {FormatMetric(avgAirQuality, "")}",
+            $"Do am dat/gia the trung binh: {FormatMetric(avgSoil, "%")}",
+            $"Do am tang thap: {FormatMetric(avgGroundHumidity, "%")}",
+            $"Do am tang cao: {FormatMetric(avgTopHumidity, "%")}"
+        });
     }
 
-    [HttpDelete("history/{userId}")]
-    public async Task<IActionResult> ClearHistory(
-        Guid userId,
-        [FromServices] ChatService chatService)
+    private static bool IsSensorPayload(JsonElement json)
     {
-        if (userId == Guid.Empty)
-        {
-            return BadRequest(new { message = "UserId is required" });
-        }
-
-        await chatService.ClearHistoryAsync(userId);
-        return NoContent();
+        return ReadDouble(json, "temperature") != null ||
+            ReadDouble(json, "humidity") != null ||
+            ReadDouble(json, "air_quality") != null ||
+            ReadDouble(json, "airQuality") != null ||
+            ReadDouble(json, "air_quanlity") != null ||
+            ReadDouble(json, "soil_moisture") != null ||
+            ReadDouble(json, "soilMoisture") != null;
     }
 
-    private async Task SaveMessageSafelyAsync(
-        ChatService chatService,
-        Guid userId,
-        string sender,
-        string text,
-        string? imageUrl = null)
+    private static double? Average(IEnumerable<double?> values)
     {
-        try
+        var numbers = values.Where(x => x.HasValue).Select(x => x!.Value).ToList();
+        return numbers.Count == 0 ? null : Math.Round(numbers.Average(), 1);
+    }
+
+    private static double? ReadDouble(JsonElement json, string name)
+    {
+        if (!json.TryGetProperty(name, out var value))
         {
-            await chatService.SaveMessageAsync(userId, sender, text, imageUrl);
+            return null;
         }
-        catch (Exception ex)
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number))
         {
-            _logger.LogError(ex, "Could not save AI chat message");
+            return number;
         }
+
+        return value.ValueKind == JsonValueKind.String &&
+            double.TryParse(value.GetString(), out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private static string FormatMetric(double? value, string unit)
+    {
+        return value == null ? "chua co du lieu" : $"{value:0.0}{unit}";
     }
 }

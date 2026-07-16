@@ -15,7 +15,6 @@ namespace IoTAgriculture.Data
         public DbSet<UserSession> UserSessions => Set<UserSession>();
         public DbSet<UserDevice> UserDevices => Set<UserDevice>();
         public DbSet<UserActivity> UserActivities => Set<UserActivity>();
-        public DbSet<ChatMessage> ChatMessages { get; set; }
         public DbSet<EmailVerificationCode> EmailVerificationCodes => Set<EmailVerificationCode>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -71,14 +70,6 @@ namespace IoTAgriculture.Data
                 .HasForeignKey(x => x.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
 
-            modelBuilder.Entity<ChatMessage>()
-                .HasIndex(x => new { x.UserId, x.CreatedAt });
-
-            modelBuilder.Entity<ChatMessage>()
-                .HasOne(x => x.AppUser)
-                .WithMany()
-                .HasForeignKey(x => x.UserId)
-                .OnDelete(DeleteBehavior.Cascade);
         }
     }
 }

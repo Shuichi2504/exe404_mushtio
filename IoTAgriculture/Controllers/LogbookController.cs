@@ -35,6 +35,18 @@ namespace IoTAgriculture.Controllers
             return Ok(logbook);
         }
 
+        [HttpGet("today/csv")]
+        public async Task<IActionResult> ExportTodayCsv(CancellationToken cancellationToken)
+        {
+            var today = TodayInVietnam();
+            var logbook = await _service.GenerateDailyLogbookAsync(today, cancellationToken);
+
+            return File(
+                Encoding.UTF8.GetBytes(BuildCsv(logbook)),
+                "text/csv; charset=utf-8",
+                $"logbook-{logbook.Date}.csv");
+        }
+
         [HttpGet("{date}")]
         public async Task<IActionResult> GetByDate(string date, CancellationToken cancellationToken)
         {

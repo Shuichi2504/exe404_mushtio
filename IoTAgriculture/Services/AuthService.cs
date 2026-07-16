@@ -108,10 +108,18 @@ namespace IoTAgriculture.Services
 
         public async Task<bool> VerifyEmailCodeAsync(VerifyEmailCodeRequestDto dto)
         {
-            return await HasCodeAsync(
+            var code = await FindCodeAsync(
                 NormalizeEmail(dto.Email),
                 NormalizePurpose(dto.Purpose),
                 dto.Code);
+            if (code == null)
+            {
+                return false;
+            }
+
+            code.VerifiedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync();
+            return true;
         }
 
         public async Task<bool> ResetPasswordAsync(ResetPasswordRequestDto dto)
@@ -408,18 +416,28 @@ namespace IoTAgriculture.Services
             return await _db.EmailVerificationCodes.AnyAsync(x =>
                 x.Email == email &&
                 x.Purpose == purpose &&
+                x.VerifiedAt != null &&
                 x.UsedAt == null &&
                 x.ExpiresAt > DateTime.UtcNow);
         }
 
         private async Task<bool> HasCodeAsync(string email, string purpose, string code)
         {
-            return await _db.EmailVerificationCodes.AnyAsync(x =>
+            return await FindCodeAsync(email, purpose, code) != null;
+        }
+
+        private async Task<EmailVerificationCode?> FindCodeAsync(string email, string purpose, string code)
+        {
+            var normalizedCode = code.Trim();
+            return await _db.EmailVerificationCodes
+                .Where(x =>
                 x.Email == email &&
                 x.Purpose == purpose &&
-                x.Code == code.Trim() &&
+                x.Code == normalizedCode &&
                 x.UsedAt == null &&
-                x.ExpiresAt > DateTime.UtcNow);
+                x.ExpiresAt > DateTime.UtcNow)
+                .OrderByDescending(x => x.CreatedAt)
+                .FirstOrDefaultAsync();
         }
 
         private async Task MarkCodesUsedAsync(string email, string purpose)
