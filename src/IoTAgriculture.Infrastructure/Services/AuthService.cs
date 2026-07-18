@@ -105,12 +105,7 @@ namespace IoTAgriculture.Services
                 throw new InvalidOperationException("Please wait before requesting another code");
             }
 
-            foreach (var oldCode in existingCodes)
-            {
-                oldCode.UsedAt = now;
-            }
-
-            _db.EmailVerificationCodes.Add(new EmailVerificationCode
+            var verificationCode = new EmailVerificationCode
             {
                 VerificationId = Guid.NewGuid(),
                 Email = email,
@@ -119,10 +114,17 @@ namespace IoTAgriculture.Services
                 UserId = user?.UserId,
                 CreatedAt = now,
                 ExpiresAt = now.AddMinutes(10)
-            });
+            };
 
-            await _db.SaveChangesAsync();
             await _emailSender.SendVerificationCodeAsync(email, code, purpose);
+
+            foreach (var oldCode in existingCodes)
+            {
+                oldCode.UsedAt = now;
+            }
+
+            _db.EmailVerificationCodes.Add(verificationCode);
+            await _db.SaveChangesAsync();
         }
 
         public async Task<bool> VerifyEmailCodeAsync(VerifyEmailCodeRequestDto dto)
@@ -145,7 +147,8 @@ namespace IoTAgriculture.Services
         {
             var email = NormalizeEmail(dto.Email);
             var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email);
-            if (user == null || !await HasCodeAsync(email, "reset-password", dto.Code))
+            var verificationCode = await FindCodeAsync(email, "reset-password", dto.Code);
+            if (user == null || verificationCode?.VerifiedAt == null)
             {
                 return false;
             }
@@ -432,11 +435,6 @@ namespace IoTAgriculture.Services
 
             raw = raw.Trim();
             return raw.Contains('@') ? NormalizeEmail(raw) : NormalizePhone(raw);
-        }
-
-        private async Task<bool> HasCodeAsync(string email, string purpose, string code)
-        {
-            return await FindCodeAsync(email, purpose, code) != null;
         }
 
         private async Task<EmailVerificationCode?> FindCodeAsync(string email, string purpose, string code)
