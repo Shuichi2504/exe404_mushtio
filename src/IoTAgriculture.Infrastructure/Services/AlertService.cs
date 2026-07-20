@@ -8,8 +8,10 @@ namespace IoTAgriculture.Services
     {
         private const double HighTemperatureWarningCelsius = 30;
         private const double HighTemperatureCriticalCelsius = 35;
-        private const double LowSoilMoisturePercent = 30;
-        private const double PoorAirQualityThreshold = 1000;
+        private const double LowHumidityPercent = 70;
+        private const double HighHumidityPercent = 96;
+        private const double PoorAirQualityThreshold = 300;
+        private static readonly TimeSpan AlertResendCooldown = TimeSpan.FromMinutes(30);
         private static readonly TimeSpan SensorOfflineAfter = TimeSpan.FromMinutes(2);
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
         private readonly IFirebaseRtdbService _firebase;
@@ -39,11 +41,10 @@ namespace IoTAgriculture.Services
                     ?? ReadString(device.Value, "deviceName")
                     ?? device.Key;
                 var temperature = ReadDouble(device.Value, "temperature");
+                var humidity = ReadDouble(device.Value, "humidity");
                 var airQuality = ReadDouble(device.Value, "air_quality")
                     ?? ReadDouble(device.Value, "airQuality")
                     ?? ReadDouble(device.Value, "air_quanlity");
-                var soilMoisture = ReadDouble(device.Value, "soil_moisture")
-                    ?? ReadDouble(device.Value, "soilMoisture");
                 var lastSeen = ReadTimestamp(device.Value);
 
                 await UpsertAlertAsync(
@@ -73,23 +74,34 @@ namespace IoTAgriculture.Services
                 await UpsertAlertAsync(
                     device.Key,
                     name,
-                    "poor_air_quality",
-                    airQuality != null && airQuality > PoorAirQualityThreshold,
-                    "air_quality",
-                    airQuality,
-                    PoorAirQualityThreshold,
-                    $"Chat luong khong khi xau tren {PoorAirQualityThreshold:0.#}",
+                    "low_humidity",
+                    humidity != null && humidity < LowHumidityPercent,
+                    "humidity",
+                    humidity,
+                    LowHumidityPercent,
+                    $"Do am khong khi thap duoi {LowHumidityPercent:0.#}%",
                     cancellationToken);
 
                 await UpsertAlertAsync(
                     device.Key,
                     name,
-                    "low_soil_moisture",
-                    soilMoisture != null && soilMoisture < LowSoilMoisturePercent,
-                    "soil_moisture",
-                    soilMoisture,
-                    LowSoilMoisturePercent,
-                    $"Do am dat thap duoi {LowSoilMoisturePercent:0.#}%",
+                    "high_humidity",
+                    humidity != null && humidity > HighHumidityPercent,
+                    "humidity",
+                    humidity,
+                    HighHumidityPercent,
+                    $"Do am khong khi cao tren {HighHumidityPercent:0.#}%",
+                    cancellationToken);
+
+                await UpsertAlertAsync(
+                    device.Key,
+                    name,
+                    "poor_air_quality",
+                    airQuality != null && airQuality > PoorAirQualityThreshold,
+                    "air_quality",
+                    airQuality,
+                    PoorAirQualityThreshold,
+                    $"Chat luong khong khi kem tren {PoorAirQualityThreshold:0.#}",
                     cancellationToken);
 
                 await UpsertAlertAsync(
@@ -123,8 +135,24 @@ namespace IoTAgriculture.Services
             {
                 if (existing != null && !existing.Resolved)
                 {
+                    var resolvedUtc = DateTimeOffset.UtcNow;
                     existing.Resolved = true;
+                    existing.UtcTime = resolvedUtc.ToString("O");
+                    existing.LocalTime = TimeZoneInfo
+                        .ConvertTime(resolvedUtc, VietnamTimeZone)
+                        .ToString("yyyy-MM-dd HH:mm:ss");
                     await _firebase.SetAsync(path, existing, cancellationToken);
+                    await _pushNotifications.SendDeviceAlertAsync(
+                        deviceKey,
+                        deviceName,
+                        alertType,
+                        metric,
+                        $"Da on dinh {deviceName}",
+                        $"{message} da tro lai binh thuong.",
+                        "info",
+                        value,
+                        threshold,
+                        cancellationToken);
                 }
 
                 return;
@@ -132,7 +160,13 @@ namespace IoTAgriculture.Services
 
             if (existing != null && !existing.Resolved)
             {
-                return;
+                var lastSent = existing.Timestamp > 0
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(existing.Timestamp)
+                    : DateTimeOffset.MinValue;
+                if (DateTimeOffset.UtcNow - lastSent < AlertResendCooldown)
+                {
+                    return;
+                }
             }
 
             var nowUtc = DateTimeOffset.UtcNow;
@@ -158,9 +192,13 @@ namespace IoTAgriculture.Services
             await _pushNotifications.SendDeviceAlertAsync(
                 deviceKey,
                 deviceName,
-                $"Cảnh báo {deviceName}",
+                alertType,
+                metric,
+                $"Canh bao {deviceName}",
                 message,
                 alert.Severity,
+                value,
+                threshold,
                 cancellationToken);
         }
 
@@ -172,9 +210,7 @@ namespace IoTAgriculture.Services
                 HasMetric(json, "airQuality") ||
                 HasMetric(json, "air_quanlity") ||
                 ReadString(json, "air_status") != null ||
-                ReadString(json, "airStatus") != null ||
-                HasMetric(json, "soil_moisture") ||
-                HasMetric(json, "soilMoisture");
+                ReadString(json, "airStatus") != null;
         }
 
         private static bool HasMetric(JsonElement json, string name)

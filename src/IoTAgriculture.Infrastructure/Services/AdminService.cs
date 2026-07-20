@@ -70,9 +70,7 @@ namespace IoTAgriculture.Services
                 HasProperty(json, "airQuality") ||
                 HasProperty(json, "air_quanlity") ||
                 HasProperty(json, "air_status") ||
-                HasProperty(json, "airStatus") ||
-                HasProperty(json, "soil_moisture") ||
-                HasProperty(json, "soilMoisture"))
+                HasProperty(json, "airStatus"))
             {
                 return "sensor";
             }

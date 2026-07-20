@@ -88,8 +88,6 @@ public class AiController : ControllerBase
         var avgHumidity = Average(sensors.Select(x => ReadDouble(x, "humidity")));
         var avgAirQuality = Average(sensors.Select(x =>
             ReadDouble(x, "air_quality") ?? ReadDouble(x, "airQuality") ?? ReadDouble(x, "air_quanlity")));
-        var avgSoil = Average(sensors.Select(x =>
-            ReadDouble(x, "soil_moisture") ?? ReadDouble(x, "soilMoisture")));
         var avgGroundHumidity = Average(sensors.Select(x =>
             ReadDouble(x, "ground_humidity") ?? ReadDouble(x, "groundHumidity")));
         var avgTopHumidity = Average(sensors.Select(x =>
@@ -101,7 +99,6 @@ public class AiController : ControllerBase
             $"Nhiet do trung binh: {FormatMetric(avgTemp, "C")}",
             $"Do am khong khi trung binh: {FormatMetric(avgHumidity, "%")}",
             $"Chat luong khong khi trung binh: {FormatMetric(avgAirQuality, "")}",
-            $"Do am dat/gia the trung binh: {FormatMetric(avgSoil, "%")}",
             $"Do am tang thap: {FormatMetric(avgGroundHumidity, "%")}",
             $"Do am tang cao: {FormatMetric(avgTopHumidity, "%")}"
         });
@@ -113,9 +110,7 @@ public class AiController : ControllerBase
             ReadDouble(json, "humidity") != null ||
             ReadDouble(json, "air_quality") != null ||
             ReadDouble(json, "airQuality") != null ||
-            ReadDouble(json, "air_quanlity") != null ||
-            ReadDouble(json, "soil_moisture") != null ||
-            ReadDouble(json, "soilMoisture") != null;
+            ReadDouble(json, "air_quanlity") != null;
     }
 
     private static double? Average(IEnumerable<double?> values)

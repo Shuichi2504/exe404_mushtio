@@ -63,8 +63,6 @@ namespace IoTAgriculture.Controllers
             var avgHumidity = Average(sensors.Select(x => ReadDouble(x.Json, "humidity")));
             var avgAirQuality = Average(sensors.Select(x =>
                 ReadDouble(x.Json, "air_quality") ?? ReadDouble(x.Json, "airQuality") ?? ReadDouble(x.Json, "air_quanlity")));
-            var avgSoil = Average(sensors.Select(x =>
-                ReadDouble(x.Json, "soil_moisture") ?? ReadDouble(x.Json, "soilMoisture")));
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var latestMs = sensors
                 .Select(x => NormalizeTimestamp(x.Timestamp, nowMs))
@@ -83,11 +81,10 @@ namespace IoTAgriculture.Controllers
                 sensorCount = sensors.Count,
                 onlineCount,
                 latestUpdate = latestMs == 0 ? "Chưa có dữ liệu" : RelativeTime(latestMs, nowMs),
-                criticalMessage = CriticalMessage(avgTemp, avgHumidity, avgAirQuality, avgSoil),
+                criticalMessage = CriticalMessage(avgTemp, avgHumidity, avgAirQuality),
                 temperature = Metric(avgTemp, TemperatureStatusText(avgTemp), TemperatureStatusLevel(avgTemp)),
                 humidity = Metric(avgHumidity, SensorStatus(avgHumidity, 75, 92), StatusLevel(avgHumidity, 75, 92)),
-                airQuality = Metric(avgAirQuality, AirQualityStatus(avgAirQuality), AirQualityLevel(avgAirQuality)),
-                soilMoisture = Metric(avgSoil, SensorStatus(avgSoil, 35, 75), StatusLevel(avgSoil, 35, 75))
+                airQuality = Metric(avgAirQuality, AirQualityStatus(avgAirQuality), AirQualityLevel(avgAirQuality))
             });
         }
 
@@ -129,8 +126,6 @@ namespace IoTAgriculture.Controllers
                     ?? ReadDouble(json.Value, "topHumidity")
                     ?? ReadDouble(json.Value, "upper_humidity")
                     ?? ReadDouble(json.Value, "upperHumidity"),
-                SoilMoisture = ReadDouble(json.Value, "soil_moisture")
-                    ?? ReadDouble(json.Value, "soilMoisture"),
                 Timestamp = ReadString(json.Value, "timestamp"),
                 DeviceName = ReadString(json.Value, "device_name")
                     ?? ReadString(json.Value, "deviceName")
@@ -180,9 +175,7 @@ namespace IoTAgriculture.Controllers
                         top_humidity = ReadDouble(x.Value, "top_humidity")
                             ?? ReadDouble(x.Value, "topHumidity")
                             ?? ReadDouble(x.Value, "upper_humidity")
-                            ?? ReadDouble(x.Value, "upperHumidity"),
-                        soil_moisture = ReadDouble(x.Value, "soil_moisture")
-                            ?? ReadDouble(x.Value, "soilMoisture")
+                            ?? ReadDouble(x.Value, "upperHumidity")
                     };
                 })
                 .Where(x =>
@@ -253,9 +246,7 @@ namespace IoTAgriculture.Controllers
                 ReadDouble(json, "ground_humidity") != null ||
                 ReadDouble(json, "groundHumidity") != null ||
                 ReadDouble(json, "top_humidity") != null ||
-                ReadDouble(json, "topHumidity") != null ||
-                ReadDouble(json, "soil_moisture") != null ||
-                ReadDouble(json, "soilMoisture") != null;
+                ReadDouble(json, "topHumidity") != null;
         }
 
         private static object Metric(double? value, string status, string level)
@@ -341,14 +332,13 @@ namespace IoTAgriculture.Controllers
             return value <= 1000 ? "warning" : "danger";
         }
 
-        private static string? CriticalMessage(double? temp, double? humidity, double? airQuality, double? soil)
+        private static string? CriticalMessage(double? temp, double? humidity, double? airQuality)
         {
             if (temp > 35) return "Nhiệt độ rất cao, cần kiểm tra nhà nấm ngay.";
             if (temp > 30) return "Nhiệt độ cao, cần kiểm tra nhà nấm.";
             if (temp < 16) return "Nhiệt độ quá thấp, cần kiểm tra hệ thống.";
             if (humidity < 70 || humidity > 96) return "Độ ẩm không khí bất thường, cần kiểm tra thông gió.";
             if (airQuality > 1000) return "Chất lượng không khí rất xấu, cần kiểm tra thông gió ngay.";
-            if (soil < 30) return "Độ ẩm đất thấp, nên kiểm tra tưới nước.";
             return null;
         }
 

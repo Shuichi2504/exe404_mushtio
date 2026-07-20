@@ -1,4 +1,3 @@
-using System.Text.Json;
 using IoTAgriculture.DTOs.Firebase;
 using IoTAgriculture.Services.Interfaces;
 
@@ -104,7 +103,6 @@ namespace IoTAgriculture.Services
                 StartTime = dto.StartTime,
                 SmartEnabled = dto.SmartEnabled,
                 SensorKey = string.IsNullOrWhiteSpace(dto.SensorKey) ? existing?.SensorKey : dto.SensorKey.Trim(),
-                SoilMoistureThreshold = dto.SoilMoistureThreshold,
                 MaxDurationMinutes = dto.MaxDurationMinutes,
                 CooldownMinutes = dto.CooldownMinutes,
                 LastRunAt = existing?.LastRunAt,
@@ -224,109 +222,9 @@ namespace IoTAgriculture.Services
             }
         }
 
-        public async Task ProcessSmartIrrigationAsync(CancellationToken cancellationToken = default)
+        public Task ProcessSmartIrrigationAsync(CancellationToken cancellationToken = default)
         {
-            var schedules = await _firebase.GetAsync<Dictionary<string, Dictionary<string, AutoIrrigationScheduleDto>>>(
-                "pumpSchedules",
-                cancellationToken);
-
-            if (schedules == null || schedules.Count == 0)
-            {
-                return;
-            }
-
-            var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, VietnamTimeZone).DateTime;
-            foreach (var pumpEntry in schedules)
-            {
-                if (pumpEntry.Value == null)
-                {
-                    continue;
-                }
-
-                foreach (var relayEntry in pumpEntry.Value)
-                {
-                    var schedule = relayEntry.Value;
-                    if (schedule == null || !schedule.SmartEnabled)
-                    {
-                        continue;
-                    }
-
-                    schedule.PumpKey = pumpEntry.Key;
-                    schedule.RelayKey = string.IsNullOrWhiteSpace(schedule.RelayKey)
-                        ? relayEntry.Key
-                        : schedule.RelayKey;
-
-                    var activeUntilLocal = ParseLocalDateTime(schedule.ActiveUntilLocal);
-                    if (activeUntilLocal != null)
-                    {
-                        if (activeUntilLocal <= nowLocal)
-                        {
-                            await SetRelayAsync(
-                                pumpEntry.Key,
-                                schedule.RelayKey,
-                                false,
-                                "smart-threshold",
-                                cancellationToken: cancellationToken);
-                            schedule.ActiveUntilAt = null;
-                            schedule.ActiveUntilLocal = null;
-                            await _firebase.SetAsync(
-                                $"pumpSchedules/{pumpEntry.Key}/{schedule.RelayKey}",
-                                schedule,
-                                cancellationToken);
-                        }
-
-                        continue;
-                    }
-
-                    if (string.IsNullOrWhiteSpace(schedule.SensorKey))
-                    {
-                        continue;
-                    }
-
-                    var lastSmartRun = ParseLocalDateTime(schedule.LastSmartRunLocal);
-                    if (lastSmartRun != null &&
-                        nowLocal - lastSmartRun < TimeSpan.FromMinutes(Math.Max(1, schedule.CooldownMinutes)))
-                    {
-                        continue;
-                    }
-
-                    var sensor = await _firebase.GetAsync<JsonElement?>(
-                        $"devices/{schedule.SensorKey}",
-                        cancellationToken);
-                    if (sensor == null || sensor.Value.ValueKind != JsonValueKind.Object)
-                    {
-                        continue;
-                    }
-
-                    var soilMoisture = ReadDouble(sensor.Value, "soil_moisture")
-                        ?? ReadDouble(sensor.Value, "soilMoisture");
-                    if (soilMoisture == null || soilMoisture >= schedule.SoilMoistureThreshold)
-                    {
-                        continue;
-                    }
-
-                    await SetRelayAsync(
-                        pumpEntry.Key,
-                        schedule.RelayKey,
-                        true,
-                        "smart-threshold",
-                        cancellationToken: cancellationToken);
-
-                    var duration = Math.Min(
-                        Math.Max(1, schedule.DurationMinutes),
-                        Math.Max(1, schedule.MaxDurationMinutes));
-                    var stopAtLocal = nowLocal.AddMinutes(duration);
-                    schedule.LastSmartRunAt = ToUtcOffset(nowLocal).ToString("O");
-                    schedule.LastSmartRunLocal = nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
-                    schedule.ActiveUntilAt = ToUtcOffset(stopAtLocal).ToString("O");
-                    schedule.ActiveUntilLocal = stopAtLocal.ToString("yyyy-MM-dd HH:mm:ss");
-
-                    await _firebase.SetAsync(
-                        $"pumpSchedules/{pumpEntry.Key}/{schedule.RelayKey}",
-                        schedule,
-                        cancellationToken);
-                }
-            }
+            return Task.CompletedTask;
         }
 
         private static DateTime CalculateNextRun(AutoIrrigationScheduleDto schedule, DateTime referenceLocal)
@@ -363,24 +261,6 @@ namespace IoTAgriculture.Services
             }
 
             return DateTime.TryParse(raw, out var parsed) ? parsed : null;
-        }
-
-        private static double? ReadDouble(JsonElement json, string name)
-        {
-            if (!json.TryGetProperty(name, out var value))
-            {
-                return null;
-            }
-
-            if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number))
-            {
-                return number;
-            }
-
-            return value.ValueKind == JsonValueKind.String &&
-                double.TryParse(value.GetString(), out var parsed)
-                ? parsed
-                : null;
         }
 
         private static DateTimeOffset ToUtcOffset(DateTime localTime)

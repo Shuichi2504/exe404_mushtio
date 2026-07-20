@@ -1,7 +1,10 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using IoTAgriculture.Data;
+using IoTAgriculture.Models;
 using IoTAgriculture.Services.Interfaces;
+using Microsoft.EntityFrameworkCore;
 
 namespace IoTAgriculture.Services
 {
@@ -12,6 +15,7 @@ namespace IoTAgriculture.Services
         private readonly IConfiguration _configuration;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IWebHostEnvironment _environment;
+        private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<FirebasePushNotificationService> _logger;
 
         private readonly SemaphoreSlim _refreshLock = new(1, 1);
@@ -24,22 +28,75 @@ namespace IoTAgriculture.Services
             IConfiguration configuration,
             IHttpClientFactory httpClientFactory,
             IWebHostEnvironment environment,
+            IServiceScopeFactory scopeFactory,
             ILogger<FirebasePushNotificationService> logger)
         {
             _configuration = configuration;
             _httpClientFactory = httpClientFactory;
             _environment = environment;
+            _scopeFactory = scopeFactory;
             _logger = logger;
         }
 
         public async Task SendDeviceAlertAsync(
             string deviceKey,
             string deviceName,
+            string alertType,
+            string metricType,
             string title,
             string body,
             string severity,
+            double? value,
+            double? threshold,
             CancellationToken cancellationToken = default)
         {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<IoTDbContext>();
+            var userIds = await db.UserDevices
+                .Where(x => x.DeviceKey == deviceKey)
+                .Select(x => x.UserId)
+                .Distinct()
+                .ToListAsync(cancellationToken);
+
+            if (userIds.Count == 0)
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            foreach (var userId in userIds)
+            {
+                db.UserNotifications.Add(new UserNotification
+                {
+                    UserNotificationId = Guid.NewGuid(),
+                    UserId = userId,
+                    DeviceKey = deviceKey,
+                    DeviceName = deviceName,
+                    AlertType = alertType,
+                    MetricType = metricType,
+                    Severity = severity,
+                    Title = title,
+                    Body = body,
+                    Value = value,
+                    Threshold = threshold,
+                    IsRead = false,
+                    CreatedAt = now
+                });
+            }
+
+            await db.SaveChangesAsync(cancellationToken);
+
+            var targetTokens = await db.FcmTokens
+                .Where(x => userIds.Contains(x.UserId))
+                .Select(x => x.Token)
+                .Distinct()
+                .ToListAsync(cancellationToken);
+
+            if (targetTokens.Count == 0)
+            {
+                return;
+            }
+
             if (!await EnsureEnabledAsync(cancellationToken))
             {
                 return;
@@ -52,71 +109,71 @@ namespace IoTAgriculture.Services
                 return;
             }
 
-            var topic = BuildTopicName(deviceKey);
-            if (string.IsNullOrWhiteSpace(topic))
+            foreach (var targetToken in targetTokens)
             {
-                return;
-            }
-
-            var payload = new
-            {
-                message = new
+                var payload = new
                 {
-                    topic,
-                    notification = new
+                    message = new
                     {
-                        title,
-                        body
-                    },
-                    data = new Dictionary<string, string>
-                    {
-                        ["deviceKey"] = deviceKey,
-                        ["deviceName"] = deviceName,
-                        ["severity"] = severity,
-                        ["title"] = title,
-                        ["body"] = body
-                    },
-                    android = new
-                    {
-                        priority = "HIGH",
+                        token = targetToken,
                         notification = new
                         {
-                            channel_id = "sensor_alerts",
-                            sound = "default"
-                        }
-                    },
-                    apns = new
-                    {
-                        payload = new
+                            title,
+                            body
+                        },
+                        data = new Dictionary<string, string>
                         {
-                            aps = new
+                            ["alertType"] = alertType,
+                            ["metricType"] = metricType,
+                            ["deviceId"] = deviceKey,
+                            ["deviceKey"] = deviceKey,
+                            ["deviceName"] = deviceName,
+                            ["severity"] = severity,
+                            ["title"] = title,
+                            ["body"] = body
+                        },
+                        android = new
+                        {
+                            priority = "HIGH",
+                            notification = new
                             {
+                                channel_id = "sensor_alerts",
                                 sound = "default"
+                            }
+                        },
+                        apns = new
+                        {
+                            payload = new
+                            {
+                                aps = new
+                                {
+                                    sound = "default"
+                                }
                             }
                         }
                     }
+                };
+
+                var request = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"https://fcm.googleapis.com/v1/projects/{config.ProjectId}/messages:send");
+                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                request.Content = new StringContent(
+                    JsonSerializer.Serialize(payload),
+                    Encoding.UTF8,
+                    "application/json");
+
+                var client = _httpClientFactory.CreateClient();
+                var response = await client.SendAsync(request, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                    _logger.LogWarning(
+                        "Failed to send FCM alert to token ending {TokenSuffix}: {StatusCode} {Body}",
+                        targetToken.Length <= 8 ? targetToken : targetToken[^8..],
+                        response.StatusCode,
+                        responseBody);
                 }
-            };
-
-            var request = new HttpRequestMessage(
-                HttpMethod.Post,
-                $"https://fcm.googleapis.com/v1/projects/{config.ProjectId}/messages:send");
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-            request.Content = new StringContent(
-                JsonSerializer.Serialize(payload),
-                Encoding.UTF8,
-                "application/json");
-
-            var client = _httpClientFactory.CreateClient();
-            var response = await client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-                _logger.LogWarning(
-                    "Failed to send FCM alert to {Topic}: {StatusCode} {Body}",
-                    topic,
-                    response.StatusCode,
-                    responseBody);
             }
         }
 
@@ -140,33 +197,60 @@ namespace IoTAgriculture.Services
                     return true;
                 }
 
+                var serviceAccountBase64 = _configuration["Firebase:Messaging:ServiceAccountBase64"]
+                    ?? _configuration["Firebase:ServiceAccountBase64"]
+                    ?? Environment.GetEnvironmentVariable("FIREBASE_SERVICE_ACCOUNT_BASE64")
+                    ?? string.Empty;
                 var serviceAccountPath = _configuration["Firebase:Messaging:ServiceAccountPath"]
                     ?? _configuration["Firebase:ServiceAccountPath"]
                     ?? string.Empty;
 
-                if (string.IsNullOrWhiteSpace(serviceAccountPath))
+                JsonDocument document;
+                if (!string.IsNullOrWhiteSpace(serviceAccountBase64))
                 {
-                    _logger.LogInformation(
-                        "Firebase push notifications are disabled because no service account path is configured.");
-                    _disabled = true;
-                    return false;
+                    try
+                    {
+                        var json = Encoding.UTF8.GetString(Convert.FromBase64String(serviceAccountBase64));
+                        document = JsonDocument.Parse(json);
+                    }
+                    catch (Exception ex) when (ex is FormatException or JsonException)
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "Firebase push notifications are disabled because service account base64 is invalid.");
+                        _disabled = true;
+                        return false;
+                    }
+                }
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(serviceAccountPath))
+                    {
+                        _logger.LogInformation(
+                            "Firebase push notifications are disabled because no service account path or base64 is configured.");
+                        _disabled = true;
+                        return false;
+                    }
+
+                    var resolvedPath = Path.IsPathRooted(serviceAccountPath)
+                        ? serviceAccountPath
+                        : Path.Combine(_environment.ContentRootPath, serviceAccountPath);
+
+                    if (!File.Exists(resolvedPath))
+                    {
+                        _logger.LogWarning(
+                            "Firebase push notifications are disabled because service account file was not found at {Path}.",
+                            resolvedPath);
+                        _disabled = true;
+                        return false;
+                    }
+
+                    await using var stream = File.OpenRead(resolvedPath);
+                    document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
                 }
 
-                var resolvedPath = Path.IsPathRooted(serviceAccountPath)
-                    ? serviceAccountPath
-                    : Path.Combine(_environment.ContentRootPath, serviceAccountPath);
-
-                if (!File.Exists(resolvedPath))
+                using (document)
                 {
-                    _logger.LogWarning(
-                        "Firebase push notifications are disabled because service account file was not found at {Path}.",
-                        resolvedPath);
-                    _disabled = true;
-                    return false;
-                }
-
-                await using var stream = File.OpenRead(resolvedPath);
-                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
                 var root = document.RootElement;
 
                 var projectId = _configuration["Firebase:Messaging:ProjectId"];
@@ -198,6 +282,7 @@ namespace IoTAgriculture.Services
 
                 _config = new FirebaseMessagingConfig(projectId, clientEmail, privateKey, tokenUri);
                 return true;
+                }
             }
             finally
             {
@@ -305,18 +390,6 @@ namespace IoTAgriculture.Services
                 RSASignaturePadding.Pkcs1);
 
             return $"{unsignedToken}.{Base64UrlEncode(signature)}";
-        }
-
-        private static string BuildTopicName(string deviceKey)
-        {
-            var sanitized = new string(deviceKey
-                .Trim()
-                .ToLowerInvariant()
-                .Select(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' or '.' or '~' or '%'
-                    ? ch
-                    : '-')
-                .ToArray());
-            return string.IsNullOrWhiteSpace(sanitized) ? string.Empty : $"device-{sanitized}";
         }
 
         private static string Base64UrlEncode(string value)

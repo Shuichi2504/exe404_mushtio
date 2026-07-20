@@ -30,8 +30,6 @@ namespace IoTAgriculture.Services
 
                     var logbookService = scope.ServiceProvider.GetRequiredService<ILogbookService>();
                     await logbookService.CaptureSensorSnapshotsAsync(stoppingToken);
-                    await logbookService.GenerateTodayLogbookAsync(stoppingToken);
-                    await logbookService.ExportTodayLogbookAsync(stoppingToken);
 
                     var alertService = scope.ServiceProvider.GetRequiredService<IAlertService>();
                     await alertService.ProcessAlertsAsync(stoppingToken);

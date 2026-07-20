@@ -50,9 +50,7 @@ namespace IoTAgriculture.Services
                     ground_temperature = ReadLayerDouble(device.Value, "ground", "lower", "temperature"),
                     top_temperature = ReadLayerDouble(device.Value, "top", "upper", "temperature"),
                     ground_humidity = ReadLayerDouble(device.Value, "ground", "lower", "humidity"),
-                    top_humidity = ReadLayerDouble(device.Value, "top", "upper", "humidity"),
-                    soil_moisture = ReadDouble(device.Value, "soil_moisture")
-                        ?? ReadDouble(device.Value, "soilMoisture")
+                    top_humidity = ReadLayerDouble(device.Value, "top", "upper", "humidity")
                 };
 
                 await _firebase.PushAsync(
@@ -235,8 +233,7 @@ namespace IoTAgriculture.Services
                 GroundTemperature = ReadLayerDouble(json, "ground", "lower", "temperature"),
                 TopTemperature = ReadLayerDouble(json, "top", "upper", "temperature"),
                 GroundHumidity = groundHumidity,
-                TopHumidity = ReadLayerDouble(json, "top", "upper", "humidity"),
-                SoilMoisture = ReadDouble(json, "soil_moisture") ?? ReadDouble(json, "soilMoisture") ?? groundHumidity
+                TopHumidity = ReadLayerDouble(json, "top", "upper", "humidity")
             };
         }
 
@@ -276,10 +273,7 @@ namespace IoTAgriculture.Services
                         GroundTemperature = Average(g.Select(x => x.GroundTemperature)),
                         TopTemperature = Average(g.Select(x => x.TopTemperature)),
                         GroundHumidity = Average(g.Select(x => x.GroundHumidity)),
-                        TopHumidity = Average(g.Select(x => x.TopHumidity)),
-                        SoilMoisture = Average(g.Select(x => x.SoilMoisture)),
-                        MinSoilMoisture = Min(g.Select(x => x.SoilMoisture)),
-                        MaxSoilMoisture = Max(g.Select(x => x.SoilMoisture))
+                        TopHumidity = Average(g.Select(x => x.TopHumidity))
                     };
                 })
                 .Where(x => x.HasValue)
@@ -399,9 +393,7 @@ namespace IoTAgriculture.Services
                 ReadDouble(json, "ground_humidity") != null ||
                 ReadDouble(json, "groundHumidity") != null ||
                 ReadDouble(json, "top_humidity") != null ||
-                ReadDouble(json, "topHumidity") != null ||
-                ReadDouble(json, "soil_moisture") != null ||
-                ReadDouble(json, "soilMoisture") != null;
+                ReadDouble(json, "topHumidity") != null;
         }
 
         private static DateTimeOffset ToUtcOffset(DateTime localTime)
@@ -427,7 +419,7 @@ namespace IoTAgriculture.Services
         private static string BuildCsv(DailyLogbookDto logbook)
         {
             var builder = new StringBuilder();
-            builder.AppendLine("timestamp,local_time,device_key,device_name,min_temperature,max_temperature,min_humidity,max_humidity,min_air_quality,max_air_quality,min_soil_moisture,max_soil_moisture,ground_temperature,top_temperature,ground_humidity,top_humidity");
+            builder.AppendLine("timestamp,local_time,device_key,device_name,min_temperature,max_temperature,min_humidity,max_humidity,min_air_quality,max_air_quality,ground_temperature,top_temperature,ground_humidity,top_humidity");
 
             foreach (var record in logbook.Records)
             {
@@ -441,8 +433,6 @@ namespace IoTAgriculture.Services
                     .Append(Format(record.MaxHumidity)).Append(',')
                     .Append(Format(record.MinAirQuality)).Append(',')
                     .Append(Format(record.MaxAirQuality)).Append(',')
-                    .Append(Format(record.MinSoilMoisture)).Append(',')
-                    .Append(Format(record.MaxSoilMoisture)).Append(',')
                     .Append(Format(record.GroundTemperature)).Append(',')
                     .Append(Format(record.TopTemperature)).Append(',')
                     .Append(Format(record.GroundHumidity)).Append(',')

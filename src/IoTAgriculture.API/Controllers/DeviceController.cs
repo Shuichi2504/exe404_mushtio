@@ -1,5 +1,7 @@
 using IoTAgriculture.Data;
+using IoTAgriculture.API.Contracts;
 using IoTAgriculture.DTOs.Firebase;
+using IoTAgriculture.Models;
 using IoTAgriculture.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -96,6 +98,43 @@ namespace IoTAgriculture.Controllers
 
             var schedule = await _service.SaveScheduleAsync(deviceKey, relayKey, dto);
             return Ok(schedule);
+        }
+
+        [HttpPost("register-fcm-token")]
+        public async Task<IActionResult> RegisterFcmToken([FromBody] RegisterFcmTokenRequest request)
+        {
+            var profile = await _authService.GetProfileAsync(ReadBearerToken());
+            if (profile == null) return Unauthorized();
+
+            var token = request.FcmToken.Trim();
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return BadRequest(new { message = "FCM token is required" });
+            }
+
+            var now = DateTime.UtcNow;
+            var existing = await _db.FcmTokens.FirstOrDefaultAsync(x => x.Token == token);
+            if (existing == null)
+            {
+                _db.FcmTokens.Add(new FcmToken
+                {
+                    FcmTokenId = Guid.NewGuid(),
+                    UserId = profile.UserId,
+                    Token = token,
+                    Platform = request.Platform.Trim(),
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+            }
+            else
+            {
+                existing.UserId = profile.UserId;
+                existing.Platform = request.Platform.Trim();
+                existing.UpdatedAt = now;
+            }
+
+            await _db.SaveChangesAsync();
+            return Ok(new { message = "FCM token registered" });
         }
 
         private async Task<bool> CanReadDeviceAsync(string deviceKey, Guid userId, string role)

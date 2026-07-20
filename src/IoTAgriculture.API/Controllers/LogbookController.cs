@@ -151,7 +151,7 @@ namespace IoTAgriculture.Controllers
         private static string BuildCsv(DailyLogbookDto logbook)
         {
             var builder = new StringBuilder();
-            builder.AppendLine("timestamp,local_time,period_start_local,period_end_local,device_key,device_name,min_temperature,max_temperature,min_humidity,max_humidity,min_air_quality,max_air_quality,min_soil_moisture,max_soil_moisture,ground_temperature,top_temperature,ground_humidity,top_humidity");
+            builder.AppendLine("timestamp,local_time,period_start_local,period_end_local,device_key,device_name,min_temperature,max_temperature,min_humidity,max_humidity,min_air_quality,max_air_quality,ground_temperature,top_temperature,ground_humidity,top_humidity");
 
             foreach (var record in logbook.Records)
             {
@@ -167,8 +167,6 @@ namespace IoTAgriculture.Controllers
                     .Append(Format(record.MaxHumidity)).Append(',')
                     .Append(Format(record.MinAirQuality)).Append(',')
                     .Append(Format(record.MaxAirQuality)).Append(',')
-                    .Append(Format(record.MinSoilMoisture)).Append(',')
-                    .Append(Format(record.MaxSoilMoisture)).Append(',')
                     .Append(Format(record.GroundTemperature)).Append(',')
                     .Append(Format(record.TopTemperature)).Append(',')
                     .Append(Format(record.GroundHumidity)).Append(',')

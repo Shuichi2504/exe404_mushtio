@@ -106,6 +106,48 @@ namespace IoTAgriculture.Services
                     CREATE INDEX [IX_UserActivities_UserId_CreatedAt] ON [UserActivities] ([UserId], [CreatedAt]);
                 END
                 """);
+
+            await db.Database.ExecuteSqlRawAsync("""
+                IF OBJECT_ID(N'[FcmTokens]', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE [FcmTokens] (
+                        [FcmTokenId] uniqueidentifier NOT NULL CONSTRAINT [PK_FcmTokens] PRIMARY KEY,
+                        [UserId] uniqueidentifier NOT NULL,
+                        [Token] nvarchar(512) NOT NULL,
+                        [Platform] nvarchar(64) NOT NULL,
+                        [CreatedAt] datetime2 NOT NULL,
+                        [UpdatedAt] datetime2 NOT NULL,
+                        CONSTRAINT [FK_FcmTokens_Users_UserId] FOREIGN KEY ([UserId]) REFERENCES [Users] ([UserId]) ON DELETE CASCADE
+                    );
+                    CREATE UNIQUE INDEX [IX_FcmTokens_Token] ON [FcmTokens] ([Token]);
+                    CREATE INDEX [IX_FcmTokens_UserId] ON [FcmTokens] ([UserId]);
+                END
+                """);
+
+            await db.Database.ExecuteSqlRawAsync("""
+                IF OBJECT_ID(N'[UserNotifications]', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE [UserNotifications] (
+                        [UserNotificationId] uniqueidentifier NOT NULL CONSTRAINT [PK_UserNotifications] PRIMARY KEY,
+                        [UserId] uniqueidentifier NOT NULL,
+                        [DeviceKey] nvarchar(100) NOT NULL,
+                        [DeviceName] nvarchar(255) NULL,
+                        [AlertType] nvarchar(80) NOT NULL,
+                        [MetricType] nvarchar(80) NOT NULL,
+                        [Severity] nvarchar(64) NOT NULL,
+                        [Title] nvarchar(160) NOT NULL,
+                        [Body] nvarchar(500) NOT NULL,
+                        [Value] float NULL,
+                        [Threshold] float NULL,
+                        [IsRead] bit NOT NULL,
+                        [CreatedAt] datetime2 NOT NULL,
+                        [ReadAt] datetime2 NULL,
+                        CONSTRAINT [FK_UserNotifications_Users_UserId] FOREIGN KEY ([UserId]) REFERENCES [Users] ([UserId]) ON DELETE CASCADE
+                    );
+                    CREATE INDEX [IX_UserNotifications_UserId_CreatedAt] ON [UserNotifications] ([UserId], [CreatedAt]);
+                END
+                """);
+
             await db.Database.ExecuteSqlRawAsync("""
                 IF OBJECT_ID(N'[EmailVerificationCodes]', N'U') IS NULL
                 BEGIN
