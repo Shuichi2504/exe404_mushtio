@@ -38,6 +38,27 @@ namespace IoTAgriculture.Services
             _logger = logger;
         }
 
+        public Task SendDeviceAlertAsync(
+            string deviceKey,
+            string deviceName,
+            string title,
+            string body,
+            string severity,
+            CancellationToken cancellationToken = default)
+        {
+            return SendDeviceAlertAsync(
+                deviceKey,
+                deviceName,
+                "device_alert",
+                "device",
+                title,
+                body,
+                severity,
+                null,
+                null,
+                cancellationToken);
+        }
+
         public async Task SendDeviceAlertAsync(
             string deviceKey,
             string deviceName,
