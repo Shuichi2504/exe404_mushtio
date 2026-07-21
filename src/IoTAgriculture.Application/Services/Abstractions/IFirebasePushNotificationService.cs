@@ -5,9 +5,13 @@ namespace IoTAgriculture.Services.Interfaces
         Task SendDeviceAlertAsync(
             string deviceKey,
             string deviceName,
+            string alertType,
+            string metric,
             string title,
             string body,
             string severity,
+            double? value,
+            double? threshold,
             CancellationToken cancellationToken = default);
     }
 }
