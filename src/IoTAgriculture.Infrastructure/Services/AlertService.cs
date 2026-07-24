@@ -16,13 +16,16 @@ namespace IoTAgriculture.Services
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
         private readonly IFirebaseRtdbService _firebase;
         private readonly IFirebasePushNotificationService _pushNotifications;
+        private readonly ILogger<AlertService> _logger;
 
         public AlertService(
             IFirebaseRtdbService firebase,
-            IFirebasePushNotificationService pushNotifications)
+            IFirebasePushNotificationService pushNotifications,
+            ILogger<AlertService> logger)
         {
             _firebase = firebase;
             _pushNotifications = pushNotifications;
+            _logger = logger;
         }
 
         public async Task ProcessAlertsAsync(CancellationToken cancellationToken = default)
@@ -57,7 +60,7 @@ namespace IoTAgriculture.Services
                     "temperature",
                     temperature,
                     HighTemperatureWarningCelsius,
-                    $"Nhiet do cao tren {HighTemperatureWarningCelsius:0.#} C",
+                    $"Nhiệt độ {FormatValue(temperature)}°C vượt ngưỡng {HighTemperatureWarningCelsius:0.#}°C",
                     cancellationToken);
 
                 await UpsertAlertAsync(
@@ -68,7 +71,7 @@ namespace IoTAgriculture.Services
                     "temperature",
                     temperature,
                     HighTemperatureCriticalCelsius,
-                    $"Nhiet do rat cao tren {HighTemperatureCriticalCelsius:0.#} C",
+                    $"Nhiệt độ {FormatValue(temperature)}°C vượt ngưỡng khẩn cấp {HighTemperatureCriticalCelsius:0.#}°C",
                     cancellationToken);
 
                 await UpsertAlertAsync(
@@ -79,7 +82,7 @@ namespace IoTAgriculture.Services
                     "humidity",
                     humidity,
                     LowHumidityPercent,
-                    $"Do am khong khi thap duoi {LowHumidityPercent:0.#}%",
+                    $"Độ ẩm không khí {FormatValue(humidity)}% thấp hơn ngưỡng {LowHumidityPercent:0.#}%",
                     cancellationToken);
 
                 await UpsertAlertAsync(
@@ -90,7 +93,7 @@ namespace IoTAgriculture.Services
                     "humidity",
                     humidity,
                     HighHumidityPercent,
-                    $"Do am khong khi cao tren {HighHumidityPercent:0.#}%",
+                    $"Độ ẩm không khí {FormatValue(humidity)}% vượt ngưỡng {HighHumidityPercent:0.#}%",
                     cancellationToken);
 
                 await UpsertAlertAsync(
@@ -101,7 +104,7 @@ namespace IoTAgriculture.Services
                     "air_quality",
                     airQuality,
                     PoorAirQualityThreshold,
-                    $"Chat luong khong khi kem tren {PoorAirQualityThreshold:0.#}",
+                    $"Chất lượng không khí {FormatValue(airQuality)} pts vượt ngưỡng {PoorAirQualityThreshold:0.#} pts",
                     cancellationToken);
 
                 await UpsertAlertAsync(
@@ -112,7 +115,7 @@ namespace IoTAgriculture.Services
                     "timestamp",
                     lastSeen == null ? null : (double)lastSeen.Value.ToUnixTimeMilliseconds(),
                     SensorOfflineAfter.TotalSeconds,
-                    "Cam bien mat ket noi",
+                    $"Cảm biến {name} đã mất kết nối",
                     cancellationToken);
             }
         }
@@ -142,13 +145,17 @@ namespace IoTAgriculture.Services
                         .ConvertTime(resolvedUtc, VietnamTimeZone)
                         .ToString("yyyy-MM-dd HH:mm:ss");
                     await _firebase.SetAsync(path, existing, cancellationToken);
+                    _logger.LogInformation(
+                        "Calling SendDeviceAlertAsync for resolved alert {AlertType} on device {DeviceKey}.",
+                        alertType,
+                        deviceKey);
                     await _pushNotifications.SendDeviceAlertAsync(
                         deviceKey,
                         deviceName,
                         alertType,
                         metric,
-                        $"Da on dinh {deviceName}",
-                        $"{message} da tro lai binh thuong.",
+                        $"Đã ổn định: {deviceName}",
+                        $"{MetricLabel(metric)} của {deviceName} đã trở lại bình thường.",
                         "info",
                         value,
                         threshold,
@@ -165,6 +172,11 @@ namespace IoTAgriculture.Services
                     : DateTimeOffset.MinValue;
                 if (DateTimeOffset.UtcNow - lastSent < AlertResendCooldown)
                 {
+                    _logger.LogInformation(
+                        "Alert {AlertType} on device {DeviceKey} is active but still in the {CooldownMinutes}-minute resend cooldown.",
+                        alertType,
+                        deviceKey,
+                        AlertResendCooldown.TotalMinutes);
                     return;
                 }
             }
@@ -189,17 +201,53 @@ namespace IoTAgriculture.Services
 
             await _firebase.SetAsync(path, alert, cancellationToken);
             await _firebase.PushAsync($"alerts/{deviceKey}", alert, cancellationToken);
+            _logger.LogInformation(
+                "Calling SendDeviceAlertAsync for active alert {AlertType} on device {DeviceKey}: value {Value}, threshold {Threshold}.",
+                alertType,
+                deviceKey,
+                value,
+                threshold);
             await _pushNotifications.SendDeviceAlertAsync(
                 deviceKey,
                 deviceName,
                 alertType,
                 metric,
-                $"Canh bao {deviceName}",
+                AlertTitle(alertType),
                 message,
                 alert.Severity,
                 value,
                 threshold,
                 cancellationToken);
+        }
+
+        private static string AlertTitle(string alertType)
+        {
+            return alertType switch
+            {
+                "high_temperature_warning" => "Cảnh báo nhiệt độ!",
+                "high_temperature_critical" => "Cảnh báo nhiệt độ khẩn cấp!",
+                "low_humidity" or "high_humidity" => "Cảnh báo độ ẩm không khí!",
+                "poor_air_quality" => "Cảnh báo chất lượng không khí!",
+                "sensor_disconnected" => "Cảnh báo mất kết nối!",
+                _ => "Cảnh báo cảm biến!"
+            };
+        }
+
+        private static string MetricLabel(string metric)
+        {
+            return metric switch
+            {
+                "temperature" => "Nhiệt độ",
+                "humidity" => "Độ ẩm không khí",
+                "air_quality" => "Chất lượng không khí",
+                "timestamp" => "Kết nối cảm biến",
+                _ => "Chỉ số cảm biến"
+            };
+        }
+
+        private static string FormatValue(double? value)
+        {
+            return value?.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) ?? "--";
         }
 
         private static bool IsSensorPayload(JsonElement json)
