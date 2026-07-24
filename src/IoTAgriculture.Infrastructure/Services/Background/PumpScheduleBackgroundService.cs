@@ -40,7 +40,7 @@ namespace IoTAgriculture.Services
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Failed to process pump schedules.");
+                    _logger.LogError(ex, "Failed to process the sensor and pump background cycle.");
                 }
 
                 try
