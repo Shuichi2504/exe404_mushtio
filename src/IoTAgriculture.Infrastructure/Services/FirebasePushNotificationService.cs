@@ -61,6 +61,10 @@ namespace IoTAgriculture.Services
 
             if (userIds.Count == 0)
             {
+                _logger.LogWarning(
+                    "FCM alert {AlertType} for device {DeviceKey} was not sent because the device is not assigned to any user.",
+                    alertType,
+                    deviceKey);
                 return;
             }
 
@@ -95,11 +99,19 @@ namespace IoTAgriculture.Services
 
             if (targetTokens.Count == 0)
             {
+                _logger.LogWarning(
+                    "FCM alert {AlertType} for device {DeviceKey} was saved in-app but not pushed because assigned users have no registered FCM token.",
+                    alertType,
+                    deviceKey);
                 return;
             }
 
             if (!await EnsureEnabledAsync(cancellationToken))
             {
+                _logger.LogWarning(
+                    "FCM alert {AlertType} for device {DeviceKey} was not pushed because Firebase Messaging configuration is disabled or invalid.",
+                    alertType,
+                    deviceKey);
                 return;
             }
 
@@ -107,6 +119,10 @@ namespace IoTAgriculture.Services
             var token = await GetAccessTokenAsync(config, cancellationToken);
             if (string.IsNullOrWhiteSpace(token))
             {
+                _logger.LogWarning(
+                    "FCM alert {AlertType} for device {DeviceKey} was not pushed because a Firebase access token could not be acquired.",
+                    alertType,
+                    deviceKey);
                 return;
             }
 
