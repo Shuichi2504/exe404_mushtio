@@ -38,10 +38,11 @@ namespace IoTAgriculture.Services
                     continue;
                 }
 
-                var timestamp = ReadTimestamp(device.Value) ?? nowMs;
+                var sourceTimestamp = ReadTimestamp(device.Value);
                 var record = new
                 {
-                    timestamp = timestamp.ToString(CultureInfo.InvariantCulture),
+                    timestamp = nowMs.ToString(CultureInfo.InvariantCulture),
+                    source_timestamp = sourceTimestamp?.ToString(CultureInfo.InvariantCulture),
                     temperature = ReadDouble(device.Value, "temperature"),
                     humidity = ReadDouble(device.Value, "humidity"),
                     air_quality = ReadDouble(device.Value, "air_quality")
