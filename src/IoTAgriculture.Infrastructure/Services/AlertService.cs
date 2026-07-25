@@ -10,7 +10,6 @@ namespace IoTAgriculture.Services
         private const double HighTemperatureCriticalCelsius = 35;
         private const double LowHumidityPercent = 70;
         private const double HighHumidityPercent = 96;
-        private const double PoorAirQualityThreshold = 300;
         private static readonly TimeSpan AlertResendCooldown = TimeSpan.FromMinutes(30);
         private static readonly TimeSpan SensorOfflineAfter = TimeSpan.FromMinutes(2);
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
@@ -48,6 +47,7 @@ namespace IoTAgriculture.Services
                 var airQuality = ReadDouble(device.Value, "air_quality")
                     ?? ReadDouble(device.Value, "airQuality")
                     ?? ReadDouble(device.Value, "air_quanlity");
+                var airQualityClassification = AirQualityClassifier.Classify(airQuality);
                 var lastSeen = ReadTimestamp(device.Value);
 
                 await UpsertAlertAsync(
@@ -100,12 +100,14 @@ namespace IoTAgriculture.Services
                     device.Key,
                     name,
                     "poor_air_quality",
-                    airQuality != null && airQuality > PoorAirQualityThreshold,
+                    airQualityClassification.ShouldAlert,
                     "air_quality",
                     airQuality,
-                    PoorAirQualityThreshold,
-                    $"Chất lượng không khí {FormatValue(airQuality)} pts vượt ngưỡng {PoorAirQualityThreshold:0.#} pts",
-                    cancellationToken);
+                    AirQualityClassifier.PushAlertThresholdPpm,
+                    AirQualityAlertMessage(airQuality, airQualityClassification),
+                    cancellationToken,
+                    severity: airQualityClassification.Severity,
+                    resendCooldown: airQualityClassification.RepeatInterval);
 
                 await UpsertAlertAsync(
                     device.Key,
@@ -129,7 +131,9 @@ namespace IoTAgriculture.Services
             double? value,
             double? threshold,
             string message,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? severity = null,
+            TimeSpan? resendCooldown = null)
         {
             var path = $"activeAlerts/{deviceKey}/{alertType}";
             var existing = await _firebase.GetAsync<AlertEntryDto>(path, cancellationToken);
@@ -167,16 +171,23 @@ namespace IoTAgriculture.Services
 
             if (existing != null && !existing.Resolved)
             {
+                var effectiveSeverity = severity ??
+                    (alertType == "sensor_disconnected" ? "critical" : "warning");
+                var effectiveCooldown = resendCooldown ?? AlertResendCooldown;
                 var lastSent = existing.Timestamp > 0
                     ? DateTimeOffset.FromUnixTimeMilliseconds(existing.Timestamp)
                     : DateTimeOffset.MinValue;
-                if (DateTimeOffset.UtcNow - lastSent < AlertResendCooldown)
+                if (string.Equals(
+                        existing.Severity,
+                        effectiveSeverity,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    DateTimeOffset.UtcNow - lastSent < effectiveCooldown)
                 {
                     _logger.LogInformation(
                         "Alert {AlertType} on device {DeviceKey} is active but still in the {CooldownMinutes}-minute resend cooldown.",
                         alertType,
                         deviceKey,
-                        AlertResendCooldown.TotalMinutes);
+                        effectiveCooldown.TotalMinutes);
                     return;
                 }
             }
@@ -188,7 +199,8 @@ namespace IoTAgriculture.Services
                 DeviceKey = deviceKey,
                 DeviceName = deviceName,
                 AlertType = alertType,
-                Severity = alertType == "sensor_disconnected" ? "critical" : "warning",
+                Severity = severity ??
+                    (alertType == "sensor_disconnected" ? "critical" : "warning"),
                 Message = message,
                 Metric = metric,
                 Value = value,
@@ -248,6 +260,14 @@ namespace IoTAgriculture.Services
         private static string FormatValue(double? value)
         {
             return value?.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) ?? "--";
+        }
+
+        private static string AirQualityAlertMessage(
+            double? value,
+            AirQualityClassification classification)
+        {
+            return $"Chất lượng không khí: {FormatValue(value)} " +
+                $"{AirQualityClassifier.Unit} — {classification.Label}";
         }
 
         private static bool IsSensorPayload(JsonElement json)
