@@ -56,11 +56,55 @@ namespace IoTAgriculture.Controllers
                     FullName = u.FullName,
                     PhoneNumber = u.PhoneNumber,
                     Address = u.Address,
-                    Role = u.Role == 1 ? "admin" : "user"
+                    Role = u.Role == 1 ? "admin" : "user",
+                    DeactivatedAt = u.DeactivatedAt
                 })
                 .ToListAsync();
 
             return Ok(users);
+        }
+
+        [HttpPost("users/{userId:guid}/deactivate")]
+        public async Task<IActionResult> DeactivateUser(
+            Guid userId,
+            CancellationToken cancellationToken)
+        {
+            if (!await IsAdminAsync())
+            {
+                return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            try
+            {
+                var changed = await _adminService.DeactivateUserAsync(
+                    userId,
+                    cancellationToken);
+                return changed
+                    ? Ok(new { message = "Đã vô hiệu hoá tài khoản" })
+                    : NotFound(new { message = "Không tìm thấy tài khoản" });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("users/{userId:guid}/reactivate")]
+        public async Task<IActionResult> ReactivateUser(
+            Guid userId,
+            CancellationToken cancellationToken)
+        {
+            if (!await IsAdminAsync())
+            {
+                return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            var changed = await _adminService.ReactivateUserAsync(
+                userId,
+                cancellationToken);
+            return changed
+                ? Ok(new { message = "Đã khôi phục tài khoản" })
+                : NotFound(new { message = "Không tìm thấy tài khoản" });
         }
 
         [HttpGet("firebase-devices")]
