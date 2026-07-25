@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using IoTAgriculture.DTOs.Firebase;
 using IoTAgriculture.Services.Interfaces;
 
@@ -5,7 +6,12 @@ namespace IoTAgriculture.Services
 {
     public class DeviceService : IDeviceService
     {
+        private const string ScheduleSource = "schedule";
+        private const string ThresholdSource = "threshold";
+        private const string ScheduleActor = "Auto - Lịch tưới";
+        private const string ThresholdActor = "Auto - Ngưỡng tưới";
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
+        private static readonly ConcurrentDictionary<string, SemaphoreSlim> DeviceLocks = new();
         private readonly IFirebaseRtdbService _firebase;
         private readonly ILogger<DeviceService> _logger;
 
@@ -19,7 +25,7 @@ namespace IoTAgriculture.Services
 
         public Task<PumpStateDto?> GetPumpStateAsync(string pumpKey)
         {
-            return _firebase.GetAsync<PumpStateDto>($"devices/{pumpKey}");
+            return _firebase.GetAsync<PumpStateDto>($"devices/{CleanKey(pumpKey, nameof(pumpKey))}");
         }
 
         public async Task SetRelayAsync(
@@ -31,51 +37,68 @@ namespace IoTAgriculture.Services
             string? actorName = null,
             CancellationToken cancellationToken = default)
         {
-            var cleanRelay = relayKey.Trim();
-            var nowUtc = DateTimeOffset.UtcNow;
-            var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, VietnamTimeZone);
-
-            await _firebase.SetAsync($"devices/{pumpKey}/{cleanRelay}", value, cancellationToken);
-            await _firebase.PatchAsync(
-                $"devices/{pumpKey}",
-                new
+            var cleanPump = CleanKey(pumpKey, nameof(pumpKey));
+            var cleanRelay = CleanRelayKey(relayKey);
+            var deviceLock = DeviceLocks.GetOrAdd(cleanPump, _ => new SemaphoreSlim(1, 1));
+            await deviceLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (string.Equals(source, "manual", StringComparison.OrdinalIgnoreCase) &&
+                    cleanRelay == "relay2")
                 {
-                    timestamp = nowUtc.ToUnixTimeSeconds().ToString(),
-                    lastActionAt = nowUtc.ToString("O"),
-                    lastActionLocal = nowLocal.ToString("yyyy-MM-dd HH:mm:ss"),
-                    lastActionSource = source,
-                    lastActionBy = actorName ?? "System"
-                },
-                cancellationToken);
+                    // A manual command immediately releases ownership from either
+                    // automation mode, so an old timer cannot turn a manual action off.
+                    await _firebase.PatchAsync(
+                        $"devices/{cleanPump}/schedule",
+                        new Dictionary<string, object?>
+                        {
+                            ["activeUntilAt"] = null,
+                            ["activeUntilLocal"] = null,
+                            ["activeSource"] = null
+                        },
+                        cancellationToken);
+                    await _firebase.PatchAsync(
+                        $"pumpSchedules/{cleanPump}/relay2",
+                        new Dictionary<string, object?>
+                        {
+                            ["activeUntilAt"] = null,
+                            ["activeUntilLocal"] = null,
+                            ["activeSource"] = null
+                        },
+                        cancellationToken);
+                }
 
-            await _firebase.PushAsync(
-                $"pumpLogs/{pumpKey}",
-                new PumpLogEntryDto
-                {
-                    PumpKey = pumpKey,
-                    RelayKey = cleanRelay,
-                    Value = value,
-                    Action = value ? "ON" : "OFF",
-                    Source = source,
-                    ActorUserId = actorUserId,
-                    ActorName = actorName ?? "System",
-                    Timestamp = nowUtc.ToUnixTimeMilliseconds(),
-                    UtcTime = nowUtc.ToString("O"),
-                    LocalTime = nowLocal.ToString("yyyy-MM-dd HH:mm:ss")
-                },
-                cancellationToken);
+                await SetRelayIfChangedCoreAsync(
+                    cleanPump,
+                    cleanRelay,
+                    value,
+                    source,
+                    actorUserId,
+                    actorName ?? "System",
+                    cancellationToken);
+            }
+            finally
+            {
+                deviceLock.Release();
+            }
         }
 
-        public async Task<IReadOnlyList<PumpLogEntryDto>> GetPumpLogsAsync(string pumpKey, int limit = 50)
+        public async Task<IReadOnlyList<PumpLogEntryDto>> GetPumpLogsAsync(
+            string pumpKey,
+            int limit = 50)
         {
-            var raw = await _firebase.GetAsync<Dictionary<string, PumpLogEntryDto>>($"pumpLogs/{pumpKey}")
+            var cleanPump = CleanKey(pumpKey, nameof(pumpKey));
+            var raw = await _firebase.GetAsync<Dictionary<string, PumpLogEntryDto>>(
+                    $"pumpLogs/{cleanPump}")
                 ?? new Dictionary<string, PumpLogEntryDto>();
 
             return raw
                 .Select(kvp =>
                 {
                     var item = kvp.Value ?? new PumpLogEntryDto();
-                    item.PumpKey = string.IsNullOrWhiteSpace(item.PumpKey) ? pumpKey : item.PumpKey;
+                    item.PumpKey = string.IsNullOrWhiteSpace(item.PumpKey)
+                        ? cleanPump
+                        : item.PumpKey;
                     return item;
                 })
                 .OrderByDescending(x => x.Timestamp)
@@ -83,9 +106,17 @@ namespace IoTAgriculture.Services
                 .ToList();
         }
 
-        public Task<AutoIrrigationScheduleDto?> GetScheduleAsync(string pumpKey, string relayKey)
+        public async Task<AutoIrrigationScheduleDto?> GetScheduleAsync(
+            string pumpKey,
+            string relayKey)
         {
-            return _firebase.GetAsync<AutoIrrigationScheduleDto>($"pumpSchedules/{pumpKey}/{relayKey.Trim()}");
+            var cleanPump = CleanKey(pumpKey, nameof(pumpKey));
+            var cleanRelay = CleanRelayKey(relayKey);
+            var embedded = await _firebase.GetAsync<AutoIrrigationScheduleDto>(
+                $"devices/{cleanPump}/schedule");
+            var legacy = await _firebase.GetAsync<AutoIrrigationScheduleDto>(
+                $"pumpSchedules/{cleanPump}/{cleanRelay}");
+            return MergeAndNormalizeSchedule(cleanPump, cleanRelay, embedded, legacy);
         }
 
         public async Task<AutoIrrigationScheduleDto> SaveScheduleAsync(
@@ -94,21 +125,32 @@ namespace IoTAgriculture.Services
             UpsertAutoIrrigationScheduleDto dto)
         {
             ValidateSchedule(dto);
-            var cleanRelay = relayKey.Trim();
-            var existing = await GetScheduleAsync(pumpKey, cleanRelay);
+            var cleanPump = CleanKey(pumpKey, nameof(pumpKey));
+            var cleanRelay = CleanRelayKey(relayKey);
+            if (cleanRelay != "relay2")
+            {
+                throw new ArgumentException("Automatic irrigation is only supported for relay2.");
+            }
+
+            var existing = await GetScheduleAsync(cleanPump, cleanRelay);
             var nowUtc = DateTimeOffset.UtcNow;
             var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, VietnamTimeZone);
             var schedule = new AutoIrrigationScheduleDto
             {
-                PumpKey = pumpKey,
+                PumpKey = cleanPump,
                 RelayKey = cleanRelay,
                 Enabled = dto.Enabled,
                 IntervalMinutes = dto.IntervalMinutes,
                 DurationSeconds = dto.DurationSeconds,
+                DurationMinutes = Math.Max(1, (int)Math.Ceiling(dto.DurationSeconds / 60d)),
                 StartTime = dto.StartTime,
                 EndTime = dto.EndTime,
+                StartHour = ParseTimeOfDay(dto.StartTime).Hours,
+                EndHour = ParseTimeOfDay(dto.EndTime).Hours,
                 SmartEnabled = dto.SmartEnabled,
-                SensorKey = string.IsNullOrWhiteSpace(dto.SensorKey) ? existing?.SensorKey : dto.SensorKey.Trim(),
+                SensorKey = string.IsNullOrWhiteSpace(dto.SensorKey)
+                    ? existing?.SensorKey
+                    : dto.SensorKey.Trim(),
                 SoilMoistureThresholdEnabled = dto.SoilMoistureThresholdEnabled,
                 SoilMoistureThreshold = dto.SoilMoistureThreshold,
                 AirTempThresholdEnabled = dto.AirTempThresholdEnabled,
@@ -121,10 +163,12 @@ namespace IoTAgriculture.Services
                 LastRunLocal = existing?.LastRunLocal,
                 ActiveUntilAt = existing?.ActiveUntilAt,
                 ActiveUntilLocal = existing?.ActiveUntilLocal,
+                ActiveSource = existing?.ActiveSource,
                 LastSmartRunAt = existing?.LastSmartRunAt,
                 LastSmartRunLocal = existing?.LastSmartRunLocal,
                 LastTriggeredAt = existing?.LastTriggeredAt,
                 LastTriggeredLocal = existing?.LastTriggeredLocal,
+                LastWaterTime = existing?.LastWaterTime ?? 0,
                 UpdatedAt = nowUtc.ToString("O"),
                 UpdatedLocal = nowLocal.ToString("yyyy-MM-dd HH:mm:ss")
             };
@@ -135,266 +179,395 @@ namespace IoTAgriculture.Services
                 schedule.NextRunAt = ToUtcOffset(nextRun).ToString("O");
                 schedule.NextRunLocal = nextRun.ToString("yyyy-MM-dd HH:mm:ss");
             }
+            else
+            {
+                schedule.NextRunAt = null;
+                schedule.NextRunLocal = null;
+            }
 
-            await _firebase.SetAsync($"pumpSchedules/{pumpKey}/{schedule.RelayKey}", schedule);
+            await SaveScheduleCopiesAsync(schedule, CancellationToken.None);
             return schedule;
         }
 
-        public async Task ProcessSchedulesAsync(CancellationToken cancellationToken = default)
+        public async Task ProcessAutomationAsync(
+            CancellationToken cancellationToken = default)
         {
-            var schedules = await _firebase.GetAsync<Dictionary<string, Dictionary<string, AutoIrrigationScheduleDto>>>(
-                "pumpSchedules",
-                cancellationToken);
+            var devices = await _firebase.GetAsync<Dictionary<string, AutomationDeviceStateDto>>(
+                    "devices",
+                    cancellationToken)
+                ?? new Dictionary<string, AutomationDeviceStateDto>();
+            var legacySchedules = await _firebase.GetAsync<
+                    Dictionary<string, Dictionary<string, AutoIrrigationScheduleDto>>>(
+                    "pumpSchedules",
+                    cancellationToken)
+                ?? new Dictionary<string, Dictionary<string, AutoIrrigationScheduleDto>>();
 
-            if (schedules == null || schedules.Count == 0)
+            foreach (var deviceEntry in devices)
             {
-                return;
-            }
-
-            var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, VietnamTimeZone).DateTime;
-            foreach (var pumpEntry in schedules)
-            {
-                var pumpKey = pumpEntry.Key;
-                if (pumpEntry.Value == null)
+                cancellationToken.ThrowIfCancellationRequested();
+                try
                 {
-                    continue;
-                }
-
-                foreach (var relayEntry in pumpEntry.Value)
-                {
-                    var schedule = relayEntry.Value;
+                    legacySchedules.TryGetValue(deviceEntry.Key, out var relaySchedules);
+                    AutoIrrigationScheduleDto? legacy = null;
+                    relaySchedules?.TryGetValue("relay2", out legacy);
+                    var schedule = MergeAndNormalizeSchedule(
+                        deviceEntry.Key,
+                        "relay2",
+                        deviceEntry.Value?.Schedule,
+                        legacy);
                     if (schedule == null)
                     {
                         continue;
                     }
 
-                    schedule.PumpKey = pumpKey;
-                    schedule.RelayKey = string.IsNullOrWhiteSpace(schedule.RelayKey)
-                        ? relayEntry.Key
-                        : schedule.RelayKey;
-
-                    var activeUntilLocal = ParseLocalDateTime(schedule.ActiveUntilLocal);
-                    if (activeUntilLocal != null)
-                    {
-                        if (activeUntilLocal <= nowLocal)
-                        {
-                            await SetRelayAsync(
-                                pumpKey,
-                                schedule.RelayKey,
-                                false,
-                                "schedule",
-                                cancellationToken: cancellationToken);
-                            schedule.ActiveUntilAt = null;
-                            schedule.ActiveUntilLocal = null;
-                            await _firebase.SetAsync(
-                                $"pumpSchedules/{pumpKey}/{schedule.RelayKey}",
-                                schedule,
-                                cancellationToken);
-                        }
-
-                        continue;
-                    }
-
-                    if (!schedule.Enabled)
-                    {
-                        continue;
-                    }
-
-                    var nextRunLocal = ParseLocalDateTime(schedule.NextRunLocal);
-                    if (nextRunLocal == null)
-                    {
-                        nextRunLocal = CalculateNextRun(schedule, nowLocal);
-                    }
-
-                    if (nextRunLocal > nowLocal)
-                    {
-                        continue;
-                    }
-
-                    await SetRelayAsync(
-                        pumpKey,
-                        schedule.RelayKey,
-                        true,
-                        "schedule",
-                        cancellationToken: cancellationToken);
-                    var stopAtLocal = nowLocal.AddSeconds(schedule.DurationSeconds);
-                    schedule.LastRunAt = ToUtcOffset(nowLocal).ToString("O");
-                    schedule.LastRunLocal = nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
-                    schedule.ActiveUntilAt = ToUtcOffset(stopAtLocal).ToString("O");
-                    schedule.ActiveUntilLocal = stopAtLocal.ToString("yyyy-MM-dd HH:mm:ss");
-
-                    // Move next run strictly forward so the scheduler won't retrigger the same slot.
-                    var recomputeFrom = nowLocal.AddMinutes(schedule.IntervalMinutes);
-                    var nextRun = CalculateNextRun(schedule, recomputeFrom);
-                    if (nextRun < stopAtLocal)
-                    {
-                        nextRun = stopAtLocal;
-                    }
-                    schedule.NextRunAt = ToUtcOffset(nextRun).ToString("O");
-                    schedule.NextRunLocal = nextRun.ToString("yyyy-MM-dd HH:mm:ss");
-
-                    await _firebase.SetAsync(
-                        $"pumpSchedules/{pumpKey}/{schedule.RelayKey}",
+                    await ProcessDeviceAutomationAsync(
+                        deviceEntry.Key,
+                        deviceEntry.Value,
+                        devices,
                         schedule,
                         cancellationToken);
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Pump automation failed for device {PumpKey}; continuing other devices.",
+                        deviceEntry.Key);
+                }
             }
         }
 
-        public async Task ProcessSmartIrrigationAsync(CancellationToken cancellationToken = default)
+        private async Task ProcessDeviceAutomationAsync(
+            string pumpKey,
+            AutomationDeviceStateDto? pump,
+            IReadOnlyDictionary<string, AutomationDeviceStateDto> devices,
+            AutoIrrigationScheduleDto schedule,
+            CancellationToken cancellationToken)
         {
-            var schedules = await _firebase.GetAsync<Dictionary<string, Dictionary<string, AutoIrrigationScheduleDto>>>(
-                "pumpSchedules",
-                cancellationToken);
-            if (schedules == null || schedules.Count == 0)
+            var deviceLock = DeviceLocks.GetOrAdd(pumpKey, _ => new SemaphoreSlim(1, 1));
+            await deviceLock.WaitAsync(cancellationToken);
+            try
             {
-                return;
+                var nowUtc = DateTimeOffset.UtcNow;
+                var nowLocalOffset = TimeZoneInfo.ConvertTime(nowUtc, VietnamTimeZone);
+                var nowLocal = nowLocalOffset.DateTime;
+                var insideWindow = IsInsideOperatingWindow(schedule, nowLocal);
+                var activeUntil = ParseLocalDateTime(schedule.ActiveUntilLocal);
+                var activeSource = NormalizeSource(schedule.ActiveSource);
+
+                if (activeUntil.HasValue)
+                {
+                    var ownerEnabled = activeSource == ScheduleSource
+                        ? schedule.Enabled
+                        : activeSource == ThresholdSource && schedule.SmartEnabled;
+                    var ownerWindowValid =
+                        activeSource == ThresholdSource || insideWindow;
+                    if (activeUntil.Value <= nowLocal ||
+                        !ownerWindowValid ||
+                        !ownerEnabled)
+                    {
+                        await SetRelayIfChangedCoreAsync(
+                            pumpKey,
+                            "relay2",
+                            false,
+                            activeSource ?? ScheduleSource,
+                            null,
+                            ActorForSource(activeSource),
+                            cancellationToken);
+                        schedule.ActiveUntilAt = null;
+                        schedule.ActiveUntilLocal = null;
+                        schedule.ActiveSource = null;
+                        await SaveScheduleCopiesAsync(schedule, cancellationToken);
+                    }
+
+                    return;
+                }
+
+                // A relay that is already on without automation ownership is manual.
+                // Automation must never claim it and later turn it off.
+                if (pump?.Relay2 == true)
+                {
+                    if (schedule.Enabled &&
+                        insideWindow &&
+                        IsScheduleDue(schedule, nowLocal))
+                    {
+                        AdvanceNextScheduleSlot(schedule, nowLocal);
+                        await SaveScheduleCopiesAsync(schedule, cancellationToken);
+                    }
+                    return;
+                }
+
+                string? triggerSource = null;
+                if (schedule.Enabled &&
+                    insideWindow &&
+                    IsScheduleDue(schedule, nowLocal))
+                {
+                    triggerSource = ScheduleSource;
+                }
+                else if (schedule.SmartEnabled &&
+                    IsThresholdViolated(schedule, devices) &&
+                    IsCooldownComplete(schedule, nowUtc))
+                {
+                    triggerSource = ThresholdSource;
+                }
+
+                if (triggerSource == null)
+                {
+                    return;
+                }
+
+                var changed = await SetRelayIfChangedCoreAsync(
+                    pumpKey,
+                    "relay2",
+                    true,
+                    triggerSource,
+                    null,
+                    ActorForSource(triggerSource),
+                    cancellationToken);
+                if (!changed)
+                {
+                    return;
+                }
+
+                var stopAtLocal = nowLocal.AddSeconds(EffectiveDurationSeconds(schedule));
+                schedule.ActiveUntilAt = ToUtcOffset(stopAtLocal).ToString("O");
+                schedule.ActiveUntilLocal = stopAtLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                schedule.ActiveSource = triggerSource;
+                schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
+
+                if (triggerSource == ScheduleSource)
+                {
+                    schedule.LastRunAt = nowUtc.ToString("O");
+                    schedule.LastRunLocal = nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                    AdvanceNextScheduleSlot(schedule, nowLocal);
+                }
+                else
+                {
+                    schedule.LastTriggeredAt = nowUtc.ToString("O");
+                    schedule.LastTriggeredLocal = nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                    schedule.LastSmartRunAt = schedule.LastTriggeredAt;
+                    schedule.LastSmartRunLocal = schedule.LastTriggeredLocal;
+                }
+
+                await SaveScheduleCopiesAsync(schedule, cancellationToken);
+            }
+            finally
+            {
+                deviceLock.Release();
+            }
+        }
+
+        private async Task<bool> SetRelayIfChangedCoreAsync(
+            string pumpKey,
+            string relayKey,
+            bool value,
+            string source,
+            string? actorUserId,
+            string actorName,
+            CancellationToken cancellationToken)
+        {
+            var state = await _firebase.GetAsync<PumpStateDto>(
+                $"devices/{pumpKey}",
+                cancellationToken);
+            var current = relayKey == "relay1" ? state?.Relay1 : state?.Relay2;
+            if (current.HasValue && current.Value == value)
+            {
+                return false;
             }
 
-            var sensors = await _firebase.GetAsync<Dictionary<string, SensorStateDto>>(
-                "devices",
-                cancellationToken) ?? new Dictionary<string, SensorStateDto>();
             var nowUtc = DateTimeOffset.UtcNow;
             var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, VietnamTimeZone);
-
-            foreach (var pumpEntry in schedules)
+            var logEntry = new PumpLogEntryDto
             {
-                if (pumpEntry.Value == null)
+                PumpKey = pumpKey,
+                RelayKey = relayKey,
+                Value = value,
+                Action = value ? "ON" : "OFF",
+                Source = source,
+                ActorUserId = actorUserId,
+                ActorName = actorName,
+                Timestamp = nowUtc.ToUnixTimeMilliseconds(),
+                UtcTime = nowUtc.ToString("O"),
+                LocalTime = nowLocal.ToString("yyyy-MM-dd HH:mm:ss")
+            };
+            var logKey = Guid.NewGuid().ToString("N");
+
+            // Firebase supports atomic multi-location PATCH at the root. Relay
+            // state, action metadata and activity history therefore succeed or
+            // fail as one operation instead of leaving an unlogged relay change.
+            await _firebase.PatchAsync(
+                string.Empty,
+                new Dictionary<string, object?>
                 {
-                    continue;
-                }
-
-                foreach (var relayEntry in pumpEntry.Value)
-                {
-                    try
-                    {
-                        var schedule = relayEntry.Value;
-                        if (schedule == null || !schedule.SmartEnabled)
-                        {
-                            continue;
-                        }
-
-                        schedule.PumpKey = pumpEntry.Key;
-                        schedule.RelayKey = string.IsNullOrWhiteSpace(schedule.RelayKey)
-                            ? relayEntry.Key
-                            : schedule.RelayKey;
-
-                        if (!IsInsideOperatingWindow(schedule, nowLocal.DateTime))
-                        {
-                            continue;
-                        }
-
-                        var activeUntil = ParseLocalDateTime(schedule.ActiveUntilLocal);
-                        if (activeUntil != null)
-                        {
-                            if (activeUntil <= nowLocal.DateTime)
-                            {
-                                await SetRelayAsync(
-                                    pumpEntry.Key,
-                                    schedule.RelayKey,
-                                    false,
-                                    "smart-threshold",
-                                    cancellationToken: cancellationToken);
-                                schedule.ActiveUntilAt = null;
-                                schedule.ActiveUntilLocal = null;
-                                await _firebase.SetAsync(
-                                    $"pumpSchedules/{pumpEntry.Key}/{schedule.RelayKey}",
-                                    schedule,
-                                    cancellationToken);
-                            }
-
-                            continue;
-                        }
-
-                        var preferredSensor = !string.IsNullOrWhiteSpace(schedule.SensorKey) &&
-                            sensors.TryGetValue(schedule.SensorKey, out var selected)
-                                ? selected
-                                : null;
-                        var soilMoisture = preferredSensor?.GroundHumidity ??
-                            sensors.Values.Select(x => x?.GroundHumidity).FirstOrDefault(x => x.HasValue);
-                        var airTemperature = preferredSensor?.Temperature ??
-                            sensors.Values.Select(x => x?.Temperature).FirstOrDefault(x => x.HasValue);
-                        var airHumidity = preferredSensor?.Humidity ??
-                            sensors.Values.Select(x => x?.Humidity).FirstOrDefault(x => x.HasValue);
-
-                        var soilViolation = schedule.SoilMoistureThresholdEnabled &&
-                            soilMoisture.HasValue &&
-                            schedule.SoilMoistureThreshold.HasValue &&
-                            soilMoisture.Value < schedule.SoilMoistureThreshold.Value;
-                        var temperatureViolation = schedule.AirTempThresholdEnabled &&
-                            airTemperature.HasValue &&
-                            schedule.AirTempMax.HasValue &&
-                            (decimal)airTemperature.Value > schedule.AirTempMax.Value;
-                        var humidityViolation = schedule.AirHumidityThresholdEnabled &&
-                            airHumidity.HasValue &&
-                            schedule.AirHumidityThreshold.HasValue &&
-                            airHumidity.Value < schedule.AirHumidityThreshold.Value;
-
-                        if (!soilViolation && !temperatureViolation && !humidityViolation)
-                        {
-                            continue;
-                        }
-
-                        var lastTriggered = ParseUtcDateTimeOffset(
-                            schedule.LastTriggeredAt ?? schedule.LastSmartRunAt);
-                        if (lastTriggered.HasValue &&
-                            nowUtc - lastTriggered.Value < TimeSpan.FromMinutes(schedule.CooldownMinutes))
-                        {
-                            continue;
-                        }
-
-                        await SetRelayAsync(
-                            pumpEntry.Key,
-                            schedule.RelayKey,
-                            true,
-                            "smart-threshold",
-                            cancellationToken: cancellationToken);
-
-                        var stopAtLocal = nowLocal.DateTime.AddSeconds(schedule.DurationSeconds);
-                        schedule.ActiveUntilAt = ToUtcOffset(stopAtLocal).ToString("O");
-                        schedule.ActiveUntilLocal = stopAtLocal.ToString("yyyy-MM-dd HH:mm:ss");
-                        schedule.LastTriggeredAt = nowUtc.ToString("O");
-                        schedule.LastTriggeredLocal = nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
-                        schedule.LastSmartRunAt = schedule.LastTriggeredAt;
-                        schedule.LastSmartRunLocal = schedule.LastTriggeredLocal;
-                        await _firebase.SetAsync(
-                            $"pumpSchedules/{pumpEntry.Key}/{schedule.RelayKey}",
-                            schedule,
-                            cancellationToken);
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(
-                            ex,
-                            "Smart irrigation failed for pump {PumpKey}, relay {RelayKey}; continuing other schedules.",
-                            pumpEntry.Key,
-                            relayEntry.Key);
-                    }
-                }
-            }
+                    [$"devices/{pumpKey}/{relayKey}"] = value,
+                    [$"devices/{pumpKey}/timestamp"] = nowUtc.ToUnixTimeSeconds().ToString(),
+                    [$"devices/{pumpKey}/lastActionAt"] = nowUtc.ToString("O"),
+                    [$"devices/{pumpKey}/lastActionLocal"] = nowLocal.ToString("yyyy-MM-dd HH:mm:ss"),
+                    [$"devices/{pumpKey}/lastActionSource"] = source,
+                    [$"devices/{pumpKey}/lastActionBy"] = actorName,
+                    [$"pumpLogs/{pumpKey}/{logKey}"] = logEntry
+                },
+                cancellationToken);
+            return true;
         }
 
-        private static DateTime CalculateNextRun(AutoIrrigationScheduleDto schedule, DateTime referenceLocal)
+        private async Task SaveScheduleCopiesAsync(
+            AutoIrrigationScheduleDto schedule,
+            CancellationToken cancellationToken)
+        {
+            await _firebase.SetAsync(
+                $"devices/{schedule.PumpKey}/schedule",
+                schedule,
+                cancellationToken);
+            // Mirror the former location during rollout so older app/backend
+            // versions do not silently overwrite the canonical device schedule.
+            await _firebase.SetAsync(
+                $"pumpSchedules/{schedule.PumpKey}/{schedule.RelayKey}",
+                schedule,
+                cancellationToken);
+        }
+
+        private static AutoIrrigationScheduleDto? MergeAndNormalizeSchedule(
+            string pumpKey,
+            string relayKey,
+            AutoIrrigationScheduleDto? embedded,
+            AutoIrrigationScheduleDto? legacy)
+        {
+            if (embedded == null && legacy == null)
+            {
+                return null;
+            }
+
+            // A record written by the app has UpdatedAt. It is the authoritative
+            // full config; the embedded device-only record supplies runtime fields.
+            var config = legacy?.UpdatedAt != null ? legacy : embedded ?? legacy!;
+            var runtime = embedded ?? legacy!;
+            var schedule = new AutoIrrigationScheduleDto
+            {
+                PumpKey = pumpKey,
+                RelayKey = relayKey,
+                Enabled = config.Enabled,
+                IntervalMinutes = config.IntervalMinutes > 0
+                    ? config.IntervalMinutes
+                    : Math.Max(1, runtime.IntervalMinutes),
+                DurationSeconds = config.DurationSeconds > 0
+                    ? config.DurationSeconds
+                    : EffectiveDurationSeconds(runtime),
+                DurationMinutes = config.DurationMinutes ?? runtime.DurationMinutes,
+                StartTime = EffectiveTime(config.StartTime, config.StartHour, runtime.StartTime, runtime.StartHour, "06:00"),
+                EndTime = EffectiveTime(config.EndTime, config.EndHour, runtime.EndTime, runtime.EndHour, "18:00"),
+                StartHour = config.StartHour ?? runtime.StartHour,
+                EndHour = config.EndHour ?? runtime.EndHour,
+                SmartEnabled = config.SmartEnabled,
+                SensorKey = config.SensorKey,
+                SoilMoistureThresholdEnabled = config.SoilMoistureThresholdEnabled,
+                SoilMoistureThreshold = config.SoilMoistureThreshold,
+                AirTempThresholdEnabled = config.AirTempThresholdEnabled,
+                AirTempMin = config.AirTempMin,
+                AirTempMax = config.AirTempMax,
+                AirHumidityThresholdEnabled = config.AirHumidityThresholdEnabled,
+                AirHumidityThreshold = config.AirHumidityThreshold,
+                CooldownMinutes = Math.Max(1, config.CooldownMinutes),
+                LastRunAt = runtime.LastRunAt ?? config.LastRunAt,
+                LastRunLocal = runtime.LastRunLocal ?? config.LastRunLocal,
+                ActiveUntilAt = runtime.ActiveUntilAt ?? config.ActiveUntilAt,
+                ActiveUntilLocal = runtime.ActiveUntilLocal ?? config.ActiveUntilLocal,
+                ActiveSource = NormalizeSource(runtime.ActiveSource ?? config.ActiveSource),
+                NextRunAt = runtime.NextRunAt ?? config.NextRunAt,
+                NextRunLocal = runtime.NextRunLocal ?? config.NextRunLocal,
+                UpdatedAt = config.UpdatedAt,
+                UpdatedLocal = config.UpdatedLocal,
+                LastSmartRunAt = runtime.LastSmartRunAt ?? config.LastSmartRunAt,
+                LastSmartRunLocal = runtime.LastSmartRunLocal ?? config.LastSmartRunLocal,
+                LastTriggeredAt = runtime.LastTriggeredAt ?? config.LastTriggeredAt,
+                LastTriggeredLocal = runtime.LastTriggeredLocal ?? config.LastTriggeredLocal,
+                LastWaterTime = Math.Max(runtime.LastWaterTime, config.LastWaterTime)
+            };
+            schedule.DurationMinutes ??= Math.Max(
+                1,
+                (int)Math.Ceiling(schedule.DurationSeconds / 60d));
+            schedule.StartHour ??= ParseTimeOfDay(schedule.StartTime).Hours;
+            schedule.EndHour ??= ParseTimeOfDay(schedule.EndTime).Hours;
+            return schedule;
+        }
+
+        private static bool IsThresholdViolated(
+            AutoIrrigationScheduleDto schedule,
+            IReadOnlyDictionary<string, AutomationDeviceStateDto> devices)
+        {
+            AutomationDeviceStateDto? sensor = null;
+            if (!string.IsNullOrWhiteSpace(schedule.SensorKey))
+            {
+                devices.TryGetValue(schedule.SensorKey, out sensor);
+            }
+
+            sensor ??= devices.Values.FirstOrDefault(x =>
+                x?.Temperature.HasValue == true ||
+                x?.Humidity.HasValue == true ||
+                x?.GroundHumidity.HasValue == true);
+
+            var soilViolation = schedule.SoilMoistureThresholdEnabled &&
+                sensor?.GroundHumidity.HasValue == true &&
+                schedule.SoilMoistureThreshold.HasValue &&
+                sensor.GroundHumidity.Value < schedule.SoilMoistureThreshold.Value;
+            var temperatureViolation = schedule.AirTempThresholdEnabled &&
+                sensor?.Temperature.HasValue == true &&
+                schedule.AirTempMax.HasValue &&
+                (decimal)sensor.Temperature.Value > schedule.AirTempMax.Value;
+            var humidityViolation = schedule.AirHumidityThresholdEnabled &&
+                sensor?.Humidity.HasValue == true &&
+                schedule.AirHumidityThreshold.HasValue &&
+                sensor.Humidity.Value < schedule.AirHumidityThreshold.Value;
+            return soilViolation || temperatureViolation || humidityViolation;
+        }
+
+        private static bool IsCooldownComplete(
+            AutoIrrigationScheduleDto schedule,
+            DateTimeOffset nowUtc)
+        {
+            var lastTriggered = ParseUtcDateTimeOffset(
+                schedule.LastTriggeredAt ?? schedule.LastSmartRunAt);
+            return !lastTriggered.HasValue ||
+                nowUtc - lastTriggered.Value >=
+                TimeSpan.FromMinutes(Math.Max(1, schedule.CooldownMinutes));
+        }
+
+        private static bool IsScheduleDue(
+            AutoIrrigationScheduleDto schedule,
+            DateTime nowLocal)
+        {
+            var nextRun = ParseLocalDateTime(schedule.NextRunLocal);
+            return !nextRun.HasValue ||
+                nextRun.Value <= nowLocal;
+        }
+
+        private static void AdvanceNextScheduleSlot(
+            AutoIrrigationScheduleDto schedule,
+            DateTime nowLocal)
+        {
+            var next = CalculateNextRun(
+                schedule,
+                nowLocal.AddMilliseconds(1));
+            schedule.NextRunAt = ToUtcOffset(next).ToString("O");
+            schedule.NextRunLocal = next.ToString("yyyy-MM-dd HH:mm:ss");
+        }
+
+        private static DateTime CalculateNextRun(
+            AutoIrrigationScheduleDto schedule,
+            DateTime referenceLocal)
         {
             var start = ParseTimeOfDay(schedule.StartTime);
             var end = ParseTimeOfDay(schedule.EndTime);
             var firstRunToday = referenceLocal.Date.Add(start);
             var endToday = referenceLocal.Date.Add(end);
-
-            if (!schedule.Enabled)
-            {
-                return firstRunToday;
-            }
-
             if (referenceLocal <= firstRunToday)
             {
                 return firstRunToday;
             }
-
             if (referenceLocal >= endToday)
             {
                 return firstRunToday.AddDays(1);
@@ -424,32 +597,106 @@ namespace IoTAgriculture.Services
             {
                 throw new ArgumentException("EndTime must be later than StartTime.");
             }
-
             if (dto.SoilMoistureThresholdEnabled && !dto.SoilMoistureThreshold.HasValue)
             {
                 throw new ArgumentException("SoilMoistureThreshold is required when enabled.");
             }
-
             if (dto.AirTempThresholdEnabled && !dto.AirTempMax.HasValue)
             {
                 throw new ArgumentException("AirTempMax is required when enabled.");
             }
-
             if (dto.AirTempMin.HasValue && dto.AirTempMax.HasValue &&
                 dto.AirTempMin.Value >= dto.AirTempMax.Value)
             {
                 throw new ArgumentException("AirTempMax must be greater than AirTempMin.");
             }
-
             if (dto.AirHumidityThresholdEnabled && !dto.AirHumidityThreshold.HasValue)
             {
                 throw new ArgumentException("AirHumidityThreshold is required when enabled.");
             }
+            if (dto.SmartEnabled &&
+                !dto.SoilMoistureThresholdEnabled &&
+                !dto.AirTempThresholdEnabled &&
+                !dto.AirHumidityThresholdEnabled)
+            {
+                throw new ArgumentException("At least one irrigation threshold must be enabled.");
+            }
+        }
+
+        private static int EffectiveDurationSeconds(AutoIrrigationScheduleDto schedule)
+        {
+            if (schedule.DurationSeconds > 0)
+            {
+                return schedule.DurationSeconds;
+            }
+            return Math.Max(1, schedule.DurationMinutes ?? 1) * 60;
+        }
+
+        private static string EffectiveTime(
+            string? preferredTime,
+            int? preferredHour,
+            string? fallbackTime,
+            int? fallbackHour,
+            string defaultValue)
+        {
+            if (!string.IsNullOrWhiteSpace(preferredTime) &&
+                preferredTime != defaultValue)
+            {
+                return preferredTime;
+            }
+            if (preferredHour.HasValue)
+            {
+                return $"{Math.Clamp(preferredHour.Value, 0, 23):00}:00";
+            }
+            if (!string.IsNullOrWhiteSpace(fallbackTime))
+            {
+                return fallbackTime;
+            }
+            return fallbackHour.HasValue
+                ? $"{Math.Clamp(fallbackHour.Value, 0, 23):00}:00"
+                : defaultValue;
+        }
+
+        private static string? NormalizeSource(string? source)
+        {
+            if (string.Equals(source, "smart-threshold", StringComparison.OrdinalIgnoreCase))
+            {
+                return ThresholdSource;
+            }
+            return string.IsNullOrWhiteSpace(source) ? null : source;
+        }
+
+        private static string ActorForSource(string? source)
+        {
+            return NormalizeSource(source) == ThresholdSource
+                ? ThresholdActor
+                : ScheduleActor;
+        }
+
+        private static string CleanKey(string value, string parameterName)
+        {
+            var clean = value?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(clean) ||
+                clean.IndexOfAny(new[] { '.', '#', '$', '[', ']', '/' }) >= 0)
+            {
+                throw new ArgumentException("Invalid Firebase key.", parameterName);
+            }
+            return clean;
+        }
+
+        private static string CleanRelayKey(string relayKey)
+        {
+            var clean = CleanKey(relayKey, nameof(relayKey)).ToLowerInvariant();
+            return clean is "relay1" or "relay2"
+                ? clean
+                : throw new ArgumentException("Relay must be relay1 or relay2.", nameof(relayKey));
         }
 
         private static TimeSpan ParseTimeOfDay(string? raw)
         {
-            return TimeSpan.TryParse(raw, out var parsed) ? parsed : new TimeSpan(6, 0, 0);
+            return TimeSpan.TryParse(raw, out var parsed)
+                ? parsed
+                : new TimeSpan(6, 0, 0);
         }
 
         private static DateTime? ParseLocalDateTime(string? raw)
@@ -458,7 +705,6 @@ namespace IoTAgriculture.Services
             {
                 return null;
             }
-
             return DateTime.TryParse(raw, out var parsed) ? parsed : null;
         }
 

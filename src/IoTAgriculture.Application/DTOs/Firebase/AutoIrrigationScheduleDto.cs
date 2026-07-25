@@ -19,11 +19,23 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("durationSeconds")]
         public int DurationSeconds { get; set; }
 
+        // Kept for compatibility with the ESP32/device schedule schema.
+        // The backend uses DurationSeconds when it is present and otherwise
+        // converts this value to seconds.
+        [JsonPropertyName("durationMinutes")]
+        public int? DurationMinutes { get; set; }
+
         [JsonPropertyName("startTime")]
         public string StartTime { get; set; } = "06:00";
 
         [JsonPropertyName("endTime")]
         public string EndTime { get; set; } = "18:00";
+
+        [JsonPropertyName("startHour")]
+        public int? StartHour { get; set; }
+
+        [JsonPropertyName("endHour")]
+        public int? EndHour { get; set; }
 
         [JsonPropertyName("smartEnabled")]
         public bool SmartEnabled { get; set; }
@@ -67,6 +79,9 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("activeUntilLocal")]
         public string? ActiveUntilLocal { get; set; }
 
+        [JsonPropertyName("activeSource")]
+        public string? ActiveSource { get; set; }
+
         [JsonPropertyName("nextRunAt")]
         public string? NextRunAt { get; set; }
 
@@ -90,5 +105,8 @@ namespace IoTAgriculture.DTOs.Firebase
 
         [JsonPropertyName("lastTriggeredLocal")]
         public string? LastTriggeredLocal { get; set; }
+
+        [JsonPropertyName("lastWaterTime")]
+        public long LastWaterTime { get; set; }
     }
 }

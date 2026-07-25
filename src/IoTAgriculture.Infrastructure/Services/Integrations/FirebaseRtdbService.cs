@@ -74,7 +74,9 @@ namespace IoTAgriculture.Services
         private string BuildUrl(string path)
         {
             var cleanPath = path.Trim('/');
-            var url = $"{_baseUrl}/{cleanPath}.json";
+            var url = string.IsNullOrEmpty(cleanPath)
+                ? $"{_baseUrl}/.json"
+                : $"{_baseUrl}/{cleanPath}.json";
 
             if (!string.IsNullOrWhiteSpace(_authToken))
             {

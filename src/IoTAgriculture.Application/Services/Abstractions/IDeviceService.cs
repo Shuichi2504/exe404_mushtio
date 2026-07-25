@@ -19,7 +19,6 @@ namespace IoTAgriculture.Services.Interfaces
             string pumpKey,
             string relayKey,
             UpsertAutoIrrigationScheduleDto dto);
-        Task ProcessSchedulesAsync(CancellationToken cancellationToken = default);
-        Task ProcessSmartIrrigationAsync(CancellationToken cancellationToken = default);
+        Task ProcessAutomationAsync(CancellationToken cancellationToken = default);
     }
 }

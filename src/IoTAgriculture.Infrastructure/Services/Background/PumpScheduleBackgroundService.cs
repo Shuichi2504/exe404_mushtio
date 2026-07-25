@@ -15,73 +15,82 @@ namespace IoTAgriculture.Services
             _logger = logger;
         }
 
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        protected override Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
-
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                try
-                {
-                    using var scope = _scopeFactory.CreateScope();
-                    var logbookService = scope.ServiceProvider.GetRequiredService<ILogbookService>();
-                    await RunStepAsync(
-                        "capture sensor history",
-                        () => logbookService.CaptureSensorSnapshotsAsync(stoppingToken),
-                        stoppingToken);
-
-                    var deviceService = scope.ServiceProvider.GetRequiredService<IDeviceService>();
-                    await RunStepAsync(
-                        "process pump schedules",
-                        () => deviceService.ProcessSchedulesAsync(stoppingToken),
-                        stoppingToken);
-                    await RunStepAsync(
-                        "process smart irrigation",
-                        () => deviceService.ProcessSmartIrrigationAsync(stoppingToken),
-                        stoppingToken);
-
-                    var alertService = scope.ServiceProvider.GetRequiredService<IAlertService>();
-                    await RunStepAsync(
-                        "process alerts",
-                        () => alertService.ProcessAlertsAsync(stoppingToken),
-                        stoppingToken);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to process the sensor and pump background cycle.");
-                }
-
-                try
-                {
-                    await timer.WaitForNextTickAsync(stoppingToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-            }
+            // Automation is intentionally isolated from slower history/alert work.
+            // This keeps durationSeconds accurate without flooding sensor history.
+            return Task.WhenAll(
+                RunAutomationLoopAsync(stoppingToken),
+                RunMonitoringLoopAsync(stoppingToken));
         }
 
-        private async Task RunStepAsync(
+        private async Task RunAutomationLoopAsync(CancellationToken stoppingToken)
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            do
+            {
+                await RunScopedStepAsync(
+                    "process pump automation",
+                    provider => provider
+                        .GetRequiredService<IDeviceService>()
+                        .ProcessAutomationAsync(stoppingToken),
+                    stoppingToken);
+            }
+            while (await WaitForNextTickAsync(timer, stoppingToken));
+        }
+
+        private async Task RunMonitoringLoopAsync(CancellationToken stoppingToken)
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+            do
+            {
+                await RunScopedStepAsync(
+                    "capture sensor history",
+                    provider => provider
+                        .GetRequiredService<ILogbookService>()
+                        .CaptureSensorSnapshotsAsync(stoppingToken),
+                    stoppingToken);
+                await RunScopedStepAsync(
+                    "process alerts",
+                    provider => provider
+                        .GetRequiredService<IAlertService>()
+                        .ProcessAlertsAsync(stoppingToken),
+                    stoppingToken);
+            }
+            while (await WaitForNextTickAsync(timer, stoppingToken));
+        }
+
+        private async Task RunScopedStepAsync(
             string step,
-            Func<Task> action,
+            Func<IServiceProvider, Task> action,
             CancellationToken stoppingToken)
         {
             try
             {
-                await action();
+                using var scope = _scopeFactory.CreateScope();
+                await action(scope.ServiceProvider);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                throw;
+                // Normal application shutdown.
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to {BackgroundStep}.", step);
+            }
+        }
+
+        private static async Task<bool> WaitForNextTickAsync(
+            PeriodicTimer timer,
+            CancellationToken stoppingToken)
+        {
+            try
+            {
+                return await timer.WaitForNextTickAsync(stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return false;
             }
         }
     }
