@@ -98,7 +98,7 @@ public class AiController : ControllerBase
             $"So cam bien dang theo doi: {sensors.Count}",
             $"Nhiet do trung binh: {FormatMetric(avgTemp, "C")}",
             $"Do am khong khi trung binh: {FormatMetric(avgHumidity, "%")}",
-            $"Chat luong khong khi trung binh: {FormatMetric(avgAirQuality, "")}",
+            $"Chat luong khong khi trung binh: {FormatMetric(avgAirQuality, "ppm")}",
             $"Do am tang thap: {FormatMetric(avgGroundHumidity, "%")}",
             $"Do am tang cao: {FormatMetric(avgTopHumidity, "%")}"
         });
