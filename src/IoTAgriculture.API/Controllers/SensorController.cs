@@ -1,6 +1,7 @@
 using System.Text.Json;
 using IoTAgriculture.Data;
 using IoTAgriculture.DTOs.Firebase;
+using IoTAgriculture.Services;
 using IoTAgriculture.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -63,6 +64,7 @@ namespace IoTAgriculture.Controllers
             var avgHumidity = Average(sensors.Select(x => ReadDouble(x.Json, "humidity")));
             var avgAirQuality = Average(sensors.Select(x =>
                 ReadDouble(x.Json, "air_quality") ?? ReadDouble(x.Json, "airQuality") ?? ReadDouble(x.Json, "air_quanlity")));
+            var avgAirQualityClassification = AirQualityClassifier.Classify(avgAirQuality);
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var latestMs = sensors
                 .Select(x => NormalizeTimestamp(x.Timestamp, nowMs))
@@ -84,7 +86,10 @@ namespace IoTAgriculture.Controllers
                 criticalMessage = CriticalMessage(avgTemp, avgHumidity, avgAirQuality),
                 temperature = Metric(avgTemp, TemperatureStatusText(avgTemp), TemperatureStatusLevel(avgTemp)),
                 humidity = Metric(avgHumidity, SensorStatus(avgHumidity, 75, 92), StatusLevel(avgHumidity, 75, 92)),
-                airQuality = Metric(avgAirQuality, AirQualityStatus(avgAirQuality), AirQualityLevel(avgAirQuality))
+                airQuality = Metric(
+                    avgAirQuality,
+                    avgAirQualityClassification.Label,
+                    avgAirQualityClassification.Level)
             });
         }
 
@@ -101,13 +106,19 @@ namespace IoTAgriculture.Controllers
                 return NotFound();
             }
 
+            var airQuality = ReadDouble(json.Value, "air_quality")
+                ?? ReadDouble(json.Value, "airQuality")
+                ?? ReadDouble(json.Value, "air_quanlity");
+            var airQualityClassification = AirQualityClassifier.Classify(airQuality);
+
             return Ok(new SensorStateDto
             {
                 Temperature = ReadDouble(json.Value, "temperature"),
                 Humidity = ReadDouble(json.Value, "humidity"),
-                AirQuality = ReadDouble(json.Value, "air_quality")
-                    ?? ReadDouble(json.Value, "airQuality")
-                    ?? ReadDouble(json.Value, "air_quanlity"),
+                AirQuality = airQuality,
+                AirQualityStatus = airQualityClassification.Label,
+                AirQualityLevel = airQualityClassification.Level,
+                AirQualityShouldAlert = airQualityClassification.ShouldAlert,
                 AirStatus = ReadString(json.Value, "air_status")
                     ?? ReadString(json.Value, "airStatus"),
                 GroundTemperature = ReadDouble(json.Value, "ground_temperature")
@@ -315,31 +326,14 @@ namespace IoTAgriculture.Controllers
             return "normal";
         }
 
-        private static string AirQualityStatus(double? value)
-        {
-            if (value == null) return "Chưa có dữ liệu";
-            if (value <= 800) return "Tốt";
-            if (value <= 1000) return "Chấp nhận được";
-            if (value <= 1500) return "Khá cao";
-            if (value <= 2000) return "Cao";
-            return "Rất cao";
-        }
-
-        private static string AirQualityLevel(double? value)
-        {
-            if (value == null) return "muted";
-            if (value <= 800) return "normal";
-            if (value <= 1500) return "warning";
-            return "danger";
-        }
-
         private static string? CriticalMessage(double? temp, double? humidity, double? airQuality)
         {
             if (temp > 35) return "Nhiệt độ rất cao, cần kiểm tra nhà nấm ngay.";
             if (temp > 30) return "Nhiệt độ cao, cần kiểm tra nhà nấm.";
             if (temp < 16) return "Nhiệt độ quá thấp, cần kiểm tra hệ thống.";
             if (humidity < 70 || humidity > 96) return "Độ ẩm không khí bất thường, cần kiểm tra thông gió.";
-            if (airQuality > 2000) return "CO₂ rất cao, cần kiểm tra thông gió ngay.";
+            if (AirQualityClassifier.Classify(airQuality).Level == "critical")
+                return "CO₂ rất cao, cần kiểm tra thông gió ngay.";
             return null;
         }
 
