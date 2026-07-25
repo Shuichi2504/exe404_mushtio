@@ -179,6 +179,12 @@ namespace IoTAgriculture.Services
                 return null;
             }
 
+            if (user.DeactivatedAt != null)
+            {
+                throw new InvalidOperationException(
+                    "Tài khoản đã bị vô hiệu hoá, vui lòng liên hệ quản trị viên");
+            }
+
             var response = await CreateSessionAsync(user);
             await LogActivityAsync(user.UserId, "login", "Dang nhap vao he thong", "info");
             return response;
@@ -352,6 +358,13 @@ namespace IoTAgriculture.Services
             }
 
             if (session.ExpiresAt <= DateTime.UtcNow)
+            {
+                _db.UserSessions.Remove(session);
+                await _db.SaveChangesAsync();
+                return null;
+            }
+
+            if (session.User?.DeactivatedAt != null)
             {
                 _db.UserSessions.Remove(session);
                 await _db.SaveChangesAsync();
