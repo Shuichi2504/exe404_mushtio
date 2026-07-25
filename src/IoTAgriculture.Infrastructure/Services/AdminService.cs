@@ -57,6 +57,56 @@ namespace IoTAgriculture.Services
                 .ToList();
         }
 
+        public async Task<bool> DeactivateUserAsync(
+            Guid userId,
+            CancellationToken cancellationToken = default)
+        {
+            var user = await _db.Users.FirstOrDefaultAsync(
+                x => x.UserId == userId,
+                cancellationToken);
+            if (user == null)
+            {
+                return false;
+            }
+
+            if (user.Role == 1)
+            {
+                throw new InvalidOperationException(
+                    "Không thể vô hiệu hoá tài khoản quản trị viên");
+            }
+
+            if (user.DeactivatedAt == null)
+            {
+                user.DeactivatedAt = DateTime.UtcNow;
+                user.UpdatedAt = DateTime.UtcNow;
+            }
+
+            var sessions = await _db.UserSessions
+                .Where(x => x.UserId == userId)
+                .ToListAsync(cancellationToken);
+            _db.UserSessions.RemoveRange(sessions);
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        public async Task<bool> ReactivateUserAsync(
+            Guid userId,
+            CancellationToken cancellationToken = default)
+        {
+            var user = await _db.Users.FirstOrDefaultAsync(
+                x => x.UserId == userId,
+                cancellationToken);
+            if (user == null)
+            {
+                return false;
+            }
+
+            user.DeactivatedAt = null;
+            user.UpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
         private static string ResolveDeviceType(JsonElement json)
         {
             if (HasProperty(json, "relay1") || HasProperty(json, "relay2"))

@@ -90,13 +90,20 @@ namespace IoTAgriculture.Controllers
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginRequestDto dto)
         {
-            var result = await _authService.LoginAsync(dto);
-            if (result == null)
+            try
             {
-                return Unauthorized(new { message = "Email/phone number or password is incorrect" });
-            }
+                var result = await _authService.LoginAsync(dto);
+                if (result == null)
+                {
+                    return Unauthorized(new { message = "Email/phone number or password is incorrect" });
+                }
 
-            return Ok(result);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Unauthorized(new { message = ex.Message });
+            }
         }
 
         [HttpGet("me")]

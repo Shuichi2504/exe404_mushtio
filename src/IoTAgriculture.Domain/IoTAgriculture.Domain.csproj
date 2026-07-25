@@ -6,4 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Remove="Services\AirQualityClassifier.cs" />
+    <Compile Include="Services\AirQualityClassifier.cs" />
+  </ItemGroup>
+
 </Project>

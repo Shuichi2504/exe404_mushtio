@@ -7,5 +7,7 @@ namespace IoTAgriculture.DTOs.Admin
         public string PhoneNumber { get; set; } = string.Empty;
         public string Address { get; set; } = string.Empty;
         public string Role { get; set; } = "user";
+        public DateTime? DeactivatedAt { get; set; }
+        public bool IsActive => DeactivatedAt == null;
     }
 }

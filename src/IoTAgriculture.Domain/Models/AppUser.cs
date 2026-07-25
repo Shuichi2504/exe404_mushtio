@@ -35,5 +35,6 @@ namespace IoTAgriculture.Models
 
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
+        public DateTime? DeactivatedAt { get; set; }
     }
 }
