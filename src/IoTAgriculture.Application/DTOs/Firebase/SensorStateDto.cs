@@ -13,6 +13,15 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("air_quality")]
         public double? AirQuality { get; set; }
 
+        [JsonPropertyName("air_quality_status")]
+        public string AirQualityStatus { get; set; } = "Chưa có dữ liệu";
+
+        [JsonPropertyName("air_quality_level")]
+        public string AirQualityLevel { get; set; } = "muted";
+
+        [JsonPropertyName("air_quality_should_alert")]
+        public bool AirQualityShouldAlert { get; set; }
+
         [JsonPropertyName("air_status")]
         public string? AirStatus { get; set; }
 
