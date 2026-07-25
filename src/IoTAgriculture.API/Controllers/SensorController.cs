@@ -318,18 +318,19 @@ namespace IoTAgriculture.Controllers
         private static string AirQualityStatus(double? value)
         {
             if (value == null) return "Chưa có dữ liệu";
-            if (value <= 150) return "Tốt";
-            if (value <= 300) return "Trung bình";
-            if (value <= 1000) return "Kém";
-            return "Rất kém";
+            if (value <= 800) return "Tốt";
+            if (value <= 1000) return "Chấp nhận được";
+            if (value <= 1500) return "Khá cao";
+            if (value <= 2000) return "Cao";
+            return "Rất cao";
         }
 
         private static string AirQualityLevel(double? value)
         {
             if (value == null) return "muted";
-            if (value <= 150) return "normal";
-            if (value <= 300) return "warning";
-            return value <= 1000 ? "warning" : "danger";
+            if (value <= 800) return "normal";
+            if (value <= 1500) return "warning";
+            return "danger";
         }
 
         private static string? CriticalMessage(double? temp, double? humidity, double? airQuality)
@@ -338,7 +339,7 @@ namespace IoTAgriculture.Controllers
             if (temp > 30) return "Nhiệt độ cao, cần kiểm tra nhà nấm.";
             if (temp < 16) return "Nhiệt độ quá thấp, cần kiểm tra hệ thống.";
             if (humidity < 70 || humidity > 96) return "Độ ẩm không khí bất thường, cần kiểm tra thông gió.";
-            if (airQuality > 1000) return "Chất lượng không khí rất xấu, cần kiểm tra thông gió ngay.";
+            if (airQuality > 2000) return "CO₂ rất cao, cần kiểm tra thông gió ngay.";
             return null;
         }
 
