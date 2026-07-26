@@ -6,6 +6,12 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 
+// EventLog can throw AccessDenied during host startup on restricted Windows
+// accounts. Console logging works consistently for local runs, containers and
+// App Service, and keeps hosted-service failures visible.
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+
 builder.Services.AddHttpClient<GeminiService>();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
