@@ -11,6 +11,7 @@ namespace IoTAgriculture.DTOs.Firebase
         public bool? Relay2 { get; set; }
 
         [JsonPropertyName("timestamp")]
+        [JsonConverter(typeof(FlexibleStringJsonConverter))]
         public string? Timestamp { get; set; }
 
         [JsonPropertyName("lastActionAt")]
