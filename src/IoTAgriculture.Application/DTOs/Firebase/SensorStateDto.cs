@@ -38,6 +38,7 @@ namespace IoTAgriculture.DTOs.Firebase
         public double? TopHumidity { get; set; }
 
         [JsonPropertyName("timestamp")]
+        [JsonConverter(typeof(FlexibleStringJsonConverter))]
         public string? Timestamp { get; set; }
 
         [JsonPropertyName("device_name")]
