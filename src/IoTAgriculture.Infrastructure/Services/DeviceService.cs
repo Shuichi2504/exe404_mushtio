@@ -45,25 +45,12 @@ namespace IoTAgriculture.Services
                 if (string.Equals(source, "manual", StringComparison.OrdinalIgnoreCase) &&
                     cleanRelay == "relay2")
                 {
-                    // A manual command immediately releases ownership from either
-                    // automation mode, so an old timer cannot turn a manual action off.
-                    await _firebase.PatchAsync(
-                        $"devices/{cleanPump}/schedule",
-                        new Dictionary<string, object?>
-                        {
-                            ["activeUntilAt"] = null,
-                            ["activeUntilLocal"] = null,
-                            ["activeSource"] = null
-                        },
-                        cancellationToken);
-                    await _firebase.PatchAsync(
-                        $"pumpSchedules/{cleanPump}/relay2",
-                        new Dictionary<string, object?>
-                        {
-                            ["activeUntilAt"] = null,
-                            ["activeUntilLocal"] = null,
-                            ["activeSource"] = null
-                        },
+                    // Manual commands own relay2 for at least one configured cooldown.
+                    // Persisting this lease in Firebase also protects against a second
+                    // backend instance immediately undoing the user's command.
+                    await ApplyManualOverrideAsync(
+                        cleanPump,
+                        value,
                         cancellationToken);
                 }
 
@@ -163,6 +150,8 @@ namespace IoTAgriculture.Services
                 ActiveUntilAt = existing?.ActiveUntilAt,
                 ActiveUntilLocal = existing?.ActiveUntilLocal,
                 ActiveSource = existing?.ActiveSource,
+                ManualOverrideUntilAt = existing?.ManualOverrideUntilAt,
+                ManualOverrideUntilLocal = existing?.ManualOverrideUntilLocal,
                 LastSmartRunAt = existing?.LastSmartRunAt,
                 LastSmartRunLocal = existing?.LastSmartRunLocal,
                 LastTriggeredAt = existing?.LastTriggeredAt,
@@ -262,6 +251,8 @@ namespace IoTAgriculture.Services
                 var insideWindow = IsInsideOperatingWindow(schedule, nowLocal);
                 var activeUntil = ParseLocalDateTime(schedule.ActiveUntilLocal);
                 var activeSource = NormalizeSource(schedule.ActiveSource);
+                var manualOverrideUntil = ParseUtcDateTimeOffset(
+                    schedule.ManualOverrideUntilAt);
                 var threshold = EvaluateThreshold(schedule, devices);
                 var cooldownComplete = IsCooldownComplete(schedule, nowUtc);
                 var diagnosticsChanged = UpdateAutomationDiagnostics(
@@ -271,9 +262,69 @@ namespace IoTAgriculture.Services
                     nowUtc,
                     nowLocal,
                     activeSource);
+                await WriteEngineHeartbeatAsync(
+                    pumpKey,
+                    schedule,
+                    threshold,
+                    cooldownComplete,
+                    pump?.Relay2 == true,
+                    nowUtc,
+                    nowLocal,
+                    cancellationToken);
+
+                if (manualOverrideUntil.HasValue &&
+                    manualOverrideUntil.Value > nowUtc)
+                {
+                    schedule.ActiveUntilAt = null;
+                    schedule.ActiveUntilLocal = null;
+                    schedule.ActiveSource = null;
+                    var manualStatusChanged = !string.Equals(
+                        schedule.ThresholdStatus,
+                        "manual-override",
+                        StringComparison.Ordinal);
+                    schedule.ThresholdStatus = "manual-override";
+                    if (diagnosticsChanged || manualStatusChanged)
+                    {
+                        await SaveAutomationStateAsync(schedule, cancellationToken);
+                    }
+                    return;
+                }
+
+                if (manualOverrideUntil.HasValue)
+                {
+                    schedule.ManualOverrideUntilAt = null;
+                    schedule.ManualOverrideUntilLocal = null;
+                    diagnosticsChanged = true;
+                }
 
                 if (activeUntil.HasValue)
                 {
+                    // A due schedule upgrades an in-progress threshold run without
+                    // toggling relay2. This implements schedule > threshold priority
+                    // and avoids a relay blink or duplicate state-change log.
+                    if (activeSource == ThresholdSource &&
+                        schedule.Enabled &&
+                        insideWindow &&
+                        IsScheduleDue(schedule, nowLocal))
+                    {
+                        activeSource = ScheduleSource;
+                        schedule.ActiveSource = ScheduleSource;
+                        var scheduleStop = nowLocal.AddSeconds(
+                            EffectiveDurationSeconds(schedule));
+                        if (scheduleStop > activeUntil.Value)
+                        {
+                            activeUntil = scheduleStop;
+                            schedule.ActiveUntilAt =
+                                ToUtcOffset(scheduleStop).ToString("O");
+                            schedule.ActiveUntilLocal =
+                                scheduleStop.ToString("yyyy-MM-dd HH:mm:ss");
+                        }
+                        schedule.LastRunAt = nowUtc.ToString("O");
+                        schedule.LastRunLocal =
+                            nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                        diagnosticsChanged = true;
+                    }
+
                     var ownerEnabled = activeSource == ScheduleSource
                         ? schedule.Enabled
                         : activeSource == ThresholdSource && schedule.SmartEnabled;
@@ -297,6 +348,23 @@ namespace IoTAgriculture.Services
                         schedule.ActiveUntilAt = null;
                         schedule.ActiveUntilLocal = null;
                         schedule.ActiveSource = null;
+                        schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
+                        if (activeSource == ScheduleSource)
+                        {
+                            schedule.LastRunAt = nowUtc.ToString("O");
+                            schedule.LastRunLocal =
+                                nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                            SetNextRun(
+                                schedule,
+                                CalculateNextRun(schedule, nowLocal));
+                        }
+                        UpdateAutomationDiagnostics(
+                            schedule,
+                            threshold,
+                            IsCooldownComplete(schedule, nowUtc),
+                            nowUtc,
+                            nowLocal,
+                            activeSource: null);
                         await SaveAutomationStateAsync(schedule, cancellationToken);
                     }
                     else if (diagnosticsChanged)
@@ -311,13 +379,6 @@ namespace IoTAgriculture.Services
                 // Automation must never claim it and later turn it off.
                 if (pump?.Relay2 == true)
                 {
-                    if (schedule.Enabled &&
-                        insideWindow &&
-                        IsScheduleDue(schedule, nowLocal))
-                    {
-                        AdvanceNextScheduleSlot(schedule, nowLocal);
-                        diagnosticsChanged = true;
-                    }
                     if (diagnosticsChanged)
                     {
                         await SaveAutomationStateAsync(schedule, cancellationToken);
@@ -351,6 +412,11 @@ namespace IoTAgriculture.Services
                 var triggerReason = triggerSource == ScheduleSource
                     ? BuildScheduleReason(schedule)
                     : threshold.Reason;
+                _logger.LogInformation(
+                    "[EngineAction] pump={PumpKey}; source={Source}; relay2=true; reason={Reason}",
+                    pumpKey,
+                    triggerSource,
+                    triggerReason);
                 var changed = await SetRelayIfChangedCoreAsync(
                     pumpKey,
                     "relay2",
@@ -370,7 +436,6 @@ namespace IoTAgriculture.Services
                 schedule.ActiveUntilAt = ToUtcOffset(stopAtLocal).ToString("O");
                 schedule.ActiveUntilLocal = stopAtLocal.ToString("yyyy-MM-dd HH:mm:ss");
                 schedule.ActiveSource = triggerSource;
-                schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
                 if (triggerSource == ThresholdSource)
                 {
                     schedule.ThresholdStatus = "watering";
@@ -380,7 +445,6 @@ namespace IoTAgriculture.Services
                 {
                     schedule.LastRunAt = nowUtc.ToString("O");
                     schedule.LastRunLocal = nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
-                    AdvanceNextScheduleSlot(schedule, nowLocal);
                 }
                 else
                 {
@@ -458,7 +522,65 @@ namespace IoTAgriculture.Services
                     [$"pumpLogs/{pumpKey}/{logKey}"] = logEntry
                 },
                 cancellationToken);
+            _logger.LogInformation(
+                "[FirebaseUpdate] pump={PumpKey}; relay={RelayKey}; value={RelayValue}; source={Source}; activityLog=pumpLogs/{PumpKey}/{LogKey}",
+                pumpKey,
+                relayKey,
+                value,
+                source,
+                pumpKey,
+                logKey);
             return true;
+        }
+
+        private async Task ApplyManualOverrideAsync(
+            string pumpKey,
+            bool requestedValue,
+            CancellationToken cancellationToken)
+        {
+            var schedule = await GetScheduleAsync(pumpKey, "relay2");
+            if (schedule == null)
+            {
+                return;
+            }
+
+            var nowUtc = DateTimeOffset.UtcNow;
+            var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, VietnamTimeZone).DateTime;
+            var overrideUntilUtc = nowUtc.AddMinutes(
+                Math.Max(1, schedule.CooldownMinutes));
+            var overrideUntilLocal = TimeZoneInfo.ConvertTime(
+                overrideUntilUtc,
+                VietnamTimeZone);
+            schedule.ManualOverrideUntilAt = overrideUntilUtc.ToString("O");
+            schedule.ManualOverrideUntilLocal =
+                overrideUntilLocal.ToString("yyyy-MM-dd HH:mm:ss");
+
+            var interruptedSource = NormalizeSource(schedule.ActiveSource);
+            schedule.ActiveUntilAt = null;
+            schedule.ActiveUntilLocal = null;
+            schedule.ActiveSource = null;
+            schedule.ThresholdStatus = "manual-override";
+
+            if (!requestedValue && interruptedSource != null)
+            {
+                schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
+                if (interruptedSource == ScheduleSource)
+                {
+                    schedule.LastRunAt = nowUtc.ToString("O");
+                    schedule.LastRunLocal =
+                        nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                    SetNextRun(
+                        schedule,
+                        CalculateNextRun(schedule, nowLocal));
+                }
+            }
+
+            await SaveAutomationStateAsync(schedule, cancellationToken);
+            _logger.LogInformation(
+                "[ManualOverride] pump={PumpKey}; relay2={RelayValue}; automation suppressed until {OverrideUntil}.",
+                pumpKey,
+                requestedValue,
+                overrideUntilUtc);
         }
 
         private async Task SaveScheduleCopiesAsync(
@@ -482,17 +604,46 @@ namespace IoTAgriculture.Services
             CancellationToken cancellationToken)
         {
             await SaveScheduleCopiesAsync(schedule, cancellationToken);
+        }
+
+        private async Task WriteEngineHeartbeatAsync(
+            string pumpKey,
+            AutoIrrigationScheduleDto schedule,
+            ThresholdEvaluation threshold,
+            bool cooldownComplete,
+            bool relay2,
+            DateTimeOffset nowUtc,
+            DateTime nowLocal,
+            CancellationToken cancellationToken)
+        {
+            schedule.AutomationLastCheckedAt = nowUtc.ToString("O");
+            schedule.AutomationLastCheckedLocal =
+                nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
             await _firebase.PatchAsync(
-                $"devices/{schedule.PumpKey}",
+                $"devices/{pumpKey}",
                 new Dictionary<string, object?>
                 {
-                    ["engineStatus"] = "running",
+                    ["engineStatus"] = "checked",
                     ["engineLastCheckedAt"] = schedule.AutomationLastCheckedAt,
                     ["engineLastCheckedLocal"] = schedule.AutomationLastCheckedLocal,
-                    ["engineMessage"] = schedule.ThresholdReason,
+                    ["engineMessage"] = threshold.Reason,
                     ["engineVersion"] = "backend-v2"
                 },
                 cancellationToken);
+            _logger.LogInformation(
+                "[EngineCheck] tick={TickAt}; pump={PumpKey}; sensor={SensorKey}; relay2={Relay2}; temp={Temperature}; tempMax={TemperatureMax}; humidity={Humidity}; humidityMin={HumidityMin}; violated={Violated}; cooldownComplete={CooldownComplete}; scheduleEnabled={ScheduleEnabled}; thresholdEnabled={ThresholdEnabled}",
+                nowUtc,
+                pumpKey,
+                threshold.SensorKey ?? "(none)",
+                relay2,
+                threshold.Temperature,
+                threshold.TemperatureThreshold,
+                threshold.Humidity,
+                threshold.HumidityThreshold,
+                threshold.IsViolated,
+                cooldownComplete,
+                schedule.Enabled,
+                schedule.SmartEnabled);
         }
 
         private static AutoIrrigationScheduleDto? MergeAndNormalizeSchedule(
@@ -541,6 +692,10 @@ namespace IoTAgriculture.Services
                 ActiveUntilAt = runtime.ActiveUntilAt ?? config.ActiveUntilAt,
                 ActiveUntilLocal = runtime.ActiveUntilLocal ?? config.ActiveUntilLocal,
                 ActiveSource = NormalizeSource(runtime.ActiveSource ?? config.ActiveSource),
+                ManualOverrideUntilAt =
+                    runtime.ManualOverrideUntilAt ?? config.ManualOverrideUntilAt,
+                ManualOverrideUntilLocal =
+                    runtime.ManualOverrideUntilLocal ?? config.ManualOverrideUntilLocal,
                 NextRunAt = runtime.NextRunAt ?? config.NextRunAt,
                 NextRunLocal = runtime.NextRunLocal ?? config.NextRunLocal,
                 NextWaterTime = Math.Max(runtime.NextWaterTime, config.NextWaterTime),
@@ -749,20 +904,46 @@ namespace IoTAgriculture.Services
             var end = ParseTimeOfDay(schedule.EndTime);
             var firstRunToday = referenceLocal.Date.Add(start);
             var endToday = referenceLocal.Date.Add(end);
-            if (referenceLocal <= firstRunToday)
+            DateTime candidate;
+
+            if (schedule.LastWaterTime > 0)
             {
-                return firstRunToday;
+                var lastWaterLocal = TimeZoneInfo.ConvertTime(
+                    DateTimeOffset.FromUnixTimeSeconds(schedule.LastWaterTime),
+                    VietnamTimeZone).DateTime;
+                candidate = lastWaterLocal.AddMinutes(
+                    Math.Max(1, schedule.IntervalMinutes));
             }
-            if (referenceLocal >= endToday)
+            else
             {
-                return firstRunToday.AddDays(1);
+                // No completed watering means startTime is still due. Keeping
+                // that past slot prevents a save at 13:32 from silently skipping
+                // the 13:30 cycle.
+                candidate = firstRunToday;
             }
 
-            var interval = Math.Max(1, schedule.IntervalMinutes);
-            var elapsedMinutes = (referenceLocal - firstRunToday).TotalMinutes;
-            var cycles = Math.Ceiling(elapsedMinutes / interval);
-            var candidate = firstRunToday.AddMinutes(cycles * interval);
-            return candidate < endToday ? candidate : firstRunToday.AddDays(1);
+            if (candidate.Date < referenceLocal.Date)
+            {
+                if (referenceLocal < firstRunToday)
+                {
+                    return firstRunToday;
+                }
+                if (referenceLocal >= endToday)
+                {
+                    return firstRunToday.AddDays(1);
+                }
+                return candidate;
+            }
+
+            var candidateStart = candidate.Date.Add(start);
+            var candidateEnd = candidate.Date.Add(end);
+            if (candidate < candidateStart)
+            {
+                return candidateStart;
+            }
+            return candidate >= candidateEnd
+                ? candidateStart.AddDays(1)
+                : candidate;
         }
 
         private static bool IsInsideOperatingWindow(
