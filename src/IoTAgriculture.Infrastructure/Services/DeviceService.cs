@@ -194,6 +194,10 @@ namespace IoTAgriculture.Services
                     "pumpSchedules",
                     cancellationToken)
                 ?? new Dictionary<string, Dictionary<string, AutoIrrigationScheduleDto>>();
+            _logger.LogInformation(
+                "[EngineRead] devices snapshot parsed; deviceCount={DeviceCount}; scheduleOwnerCount={ScheduleOwnerCount}.",
+                devices.Count,
+                legacySchedules.Count);
 
             foreach (var deviceEntry in devices)
             {
@@ -249,6 +253,9 @@ namespace IoTAgriculture.Services
                 var nowLocalOffset = TimeZoneInfo.ConvertTime(nowUtc, VietnamTimeZone);
                 var nowLocal = nowLocalOffset.DateTime;
                 var insideWindow = IsInsideOperatingWindow(schedule, nowLocal);
+                var scheduleDue = schedule.Enabled &&
+                    insideWindow &&
+                    IsScheduleDue(schedule, nowLocal);
                 var activeUntil = ParseLocalDateTime(schedule.ActiveUntilLocal);
                 var activeSource = NormalizeSource(schedule.ActiveSource);
                 var manualOverrideUntil = ParseUtcDateTimeOffset(
@@ -262,6 +269,41 @@ namespace IoTAgriculture.Services
                     nowUtc,
                     nowLocal,
                     activeSource);
+                _logger.LogInformation(
+                    "[EngineConfig] pump={PumpKey}; relay=relay2; scheduleEnabled={ScheduleEnabled}; intervalMinutes={IntervalMinutes}; durationSeconds={DurationSeconds}; window={StartTime}-{EndTime}; thresholdEnabled={ThresholdEnabled}; sensor={SensorKey}; tempCheckEnabled={TempCheckEnabled}; tempMax={TempMax}; humidityCheckEnabled={HumidityCheckEnabled}; humidityMin={HumidityMin}; cooldownMinutes={CooldownMinutes}.",
+                    pumpKey,
+                    schedule.Enabled,
+                    schedule.IntervalMinutes,
+                    EffectiveDurationSeconds(schedule),
+                    schedule.StartTime,
+                    schedule.EndTime,
+                    schedule.SmartEnabled,
+                    schedule.SensorKey ?? "(none)",
+                    schedule.AirTempThresholdEnabled,
+                    schedule.AirTempMax,
+                    schedule.AirHumidityThresholdEnabled,
+                    schedule.AirHumidityThreshold,
+                    schedule.CooldownMinutes);
+                _logger.LogInformation(
+                    "[EngineSensor] pump={PumpKey}; sensor={SensorKey}; temperature={Temperature}; humidity={Humidity}; readingComplete={ReadingComplete}; thresholdViolated={ThresholdViolated}; reason={ThresholdReason}.",
+                    pumpKey,
+                    threshold.SensorKey ?? "(none)",
+                    threshold.Temperature,
+                    threshold.Humidity,
+                    threshold.HasRequiredReading,
+                    threshold.IsViolated,
+                    threshold.Reason);
+                _logger.LogInformation(
+                    "[EngineDecision] pump={PumpKey}; relay2={Relay2}; insideWindow={InsideWindow}; scheduleDue={ScheduleDue}; thresholdViolated={ThresholdViolated}; cooldownComplete={CooldownComplete}; activeSource={ActiveSource}; activeUntil={ActiveUntil}; manualOverrideUntil={ManualOverrideUntil}.",
+                    pumpKey,
+                    pump?.Relay2 == true,
+                    insideWindow,
+                    scheduleDue,
+                    threshold.IsViolated,
+                    cooldownComplete,
+                    activeSource ?? "(none)",
+                    activeUntil,
+                    manualOverrideUntil);
                 await WriteEngineHeartbeatAsync(
                     pumpKey,
                     schedule,
@@ -275,6 +317,9 @@ namespace IoTAgriculture.Services
                 if (manualOverrideUntil.HasValue &&
                     manualOverrideUntil.Value > nowUtc)
                 {
+                    _logger.LogInformation(
+                        "[EngineDecision] pump={PumpKey}; action=none; reason=manual-override.",
+                        pumpKey);
                     schedule.ActiveUntilAt = null;
                     schedule.ActiveUntilLocal = null;
                     schedule.ActiveSource = null;
@@ -303,9 +348,7 @@ namespace IoTAgriculture.Services
                     // toggling relay2. This implements schedule > threshold priority
                     // and avoids a relay blink or duplicate state-change log.
                     if (activeSource == ThresholdSource &&
-                        schedule.Enabled &&
-                        insideWindow &&
-                        IsScheduleDue(schedule, nowLocal))
+                        scheduleDue)
                     {
                         activeSource = ScheduleSource;
                         schedule.ActiveSource = ScheduleSource;
@@ -334,6 +377,13 @@ namespace IoTAgriculture.Services
                         !ownerWindowValid ||
                         !ownerEnabled)
                     {
+                        _logger.LogInformation(
+                            "[EngineDecision] pump={PumpKey}; action=relay2-off; source={Source}; reason={Reason}.",
+                            pumpKey,
+                            activeSource ?? ScheduleSource,
+                            activeUntil.Value <= nowLocal
+                                ? "duration-complete"
+                                : "automation-disabled-or-outside-window");
                         await SetRelayIfChangedCoreAsync(
                             pumpKey,
                             "relay2",
@@ -379,6 +429,9 @@ namespace IoTAgriculture.Services
                 // Automation must never claim it and later turn it off.
                 if (pump?.Relay2 == true)
                 {
+                    _logger.LogInformation(
+                        "[EngineDecision] pump={PumpKey}; action=none; reason=relay2-owned-by-manual-command.",
+                        pumpKey);
                     if (diagnosticsChanged)
                     {
                         await SaveAutomationStateAsync(schedule, cancellationToken);
@@ -387,9 +440,7 @@ namespace IoTAgriculture.Services
                 }
 
                 string? triggerSource = null;
-                if (schedule.Enabled &&
-                    insideWindow &&
-                    IsScheduleDue(schedule, nowLocal))
+                if (scheduleDue)
                 {
                     triggerSource = ScheduleSource;
                 }
@@ -402,6 +453,9 @@ namespace IoTAgriculture.Services
 
                 if (triggerSource == null)
                 {
+                    _logger.LogInformation(
+                        "[EngineDecision] pump={PumpKey}; action=none; reason=no-due-automation-condition.",
+                        pumpKey);
                     if (diagnosticsChanged)
                     {
                         await SaveAutomationStateAsync(schedule, cancellationToken);
