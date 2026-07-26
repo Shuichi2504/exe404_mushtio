@@ -85,7 +85,7 @@ namespace IoTAgriculture.Controllers
                 latestUpdate = latestMs == 0 ? "Chưa có dữ liệu" : RelativeTime(latestMs, nowMs),
                 criticalMessage = CriticalMessage(avgTemp, avgHumidity, avgAirQuality),
                 temperature = Metric(avgTemp, TemperatureStatusText(avgTemp), TemperatureStatusLevel(avgTemp)),
-                humidity = Metric(avgHumidity, SensorStatus(avgHumidity, 75, 92), StatusLevel(avgHumidity, 75, 92)),
+                humidity = Metric(avgHumidity, SensorStatus(avgHumidity, 70, 96), StatusLevel(avgHumidity, 70, 96)),
                 airQuality = Metric(
                     avgAirQuality,
                     avgAirQualityClassification.Label,
