@@ -7,23 +7,29 @@ namespace IoTAgriculture.Services
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly AutomationEngineHealth _health;
         private readonly ILogger<PumpScheduleBackgroundService> _logger;
-        private DateTimeOffset _nextSuccessLogAt = DateTimeOffset.MinValue;
+        private readonly TimeSpan _automationInterval;
 
         public PumpScheduleBackgroundService(
             IServiceScopeFactory scopeFactory,
             AutomationEngineHealth health,
-            ILogger<PumpScheduleBackgroundService> logger)
+            ILogger<PumpScheduleBackgroundService> logger,
+            IConfiguration configuration)
         {
             _scopeFactory = scopeFactory;
             _health = health;
             _logger = logger;
+            _automationInterval = TimeSpan.FromSeconds(Math.Clamp(
+                configuration.GetValue("Automation:TickSeconds", 10),
+                1,
+                30));
         }
 
         protected override Task ExecuteAsync(CancellationToken stoppingToken)
         {
             _health.MarkStarted();
             _logger.LogInformation(
-                "Pump automation engine started. Automation interval: 1 second; monitoring interval: 30 seconds.");
+                "Pump automation engine started. Automation interval: {AutomationIntervalSeconds} seconds; monitoring interval: 30 seconds.",
+                _automationInterval.TotalSeconds);
             // Automation is intentionally isolated from slower history/alert work.
             // This keeps durationSeconds accurate without flooding sensor history.
             return Task.WhenAll(
@@ -33,7 +39,7 @@ namespace IoTAgriculture.Services
 
         private async Task RunAutomationLoopAsync(CancellationToken stoppingToken)
         {
-            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            using var timer = new PeriodicTimer(_automationInterval);
             do
             {
                 await RunScopedStepAsync(
@@ -82,13 +88,9 @@ namespace IoTAgriculture.Services
                 {
                     _health.MarkSuccess();
                     var now = DateTimeOffset.UtcNow;
-                    if (now >= _nextSuccessLogAt)
-                    {
-                        _nextSuccessLogAt = now.AddSeconds(30);
-                        _logger.LogInformation(
-                            "Pump automation engine tick succeeded at {TickAt}.",
-                            now);
-                    }
+                    _logger.LogInformation(
+                        "Pump automation engine tick succeeded at {TickAt}.",
+                        now);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
