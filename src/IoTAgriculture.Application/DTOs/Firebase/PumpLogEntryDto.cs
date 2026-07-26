@@ -25,6 +25,24 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("actorName")]
         public string ActorName { get; set; } = "System";
 
+        [JsonPropertyName("reason")]
+        public string? Reason { get; set; }
+
+        [JsonPropertyName("sensorKey")]
+        public string? SensorKey { get; set; }
+
+        [JsonPropertyName("temperature")]
+        public double? Temperature { get; set; }
+
+        [JsonPropertyName("humidity")]
+        public double? Humidity { get; set; }
+
+        [JsonPropertyName("temperatureThreshold")]
+        public decimal? TemperatureThreshold { get; set; }
+
+        [JsonPropertyName("humidityThreshold")]
+        public int? HumidityThreshold { get; set; }
+
         [JsonPropertyName("timestamp")]
         public long Timestamp { get; set; }
 
