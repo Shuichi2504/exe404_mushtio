@@ -21,5 +21,8 @@ namespace IoTAgriculture.DTOs.Firebase
 
         [JsonPropertyName("lastActionSource")]
         public string? LastActionSource { get; set; }
+
+        [JsonPropertyName("lastActionReason")]
+        public string? LastActionReason { get; set; }
     }
 }
