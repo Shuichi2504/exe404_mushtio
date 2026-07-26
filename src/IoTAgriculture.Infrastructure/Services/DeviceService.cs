@@ -8,8 +8,7 @@ namespace IoTAgriculture.Services
     {
         private const string ScheduleSource = "schedule";
         private const string ThresholdSource = "threshold";
-        private const string ScheduleActor = "Auto - Lịch tưới";
-        private const string ThresholdActor = "Auto - Ngưỡng tưới";
+        private static readonly TimeSpan DiagnosticsWriteInterval = TimeSpan.FromSeconds(30);
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
         private static readonly ConcurrentDictionary<string, SemaphoreSlim> DeviceLocks = new();
         private readonly IFirebaseRtdbService _firebase;
@@ -169,6 +168,11 @@ namespace IoTAgriculture.Services
                 LastTriggeredAt = existing?.LastTriggeredAt,
                 LastTriggeredLocal = existing?.LastTriggeredLocal,
                 LastWaterTime = existing?.LastWaterTime ?? 0,
+                ThresholdConditionActive = existing?.ThresholdConditionActive ?? false,
+                ThresholdStatus = existing?.ThresholdStatus ?? "not-checked",
+                ThresholdReason = existing?.ThresholdReason,
+                AutomationLastCheckedAt = existing?.AutomationLastCheckedAt,
+                AutomationLastCheckedLocal = existing?.AutomationLastCheckedLocal,
                 UpdatedAt = nowUtc.ToString("O"),
                 UpdatedLocal = nowLocal.ToString("yyyy-MM-dd HH:mm:ss")
             };
@@ -176,13 +180,13 @@ namespace IoTAgriculture.Services
             if (schedule.Enabled)
             {
                 var nextRun = CalculateNextRun(schedule, nowLocal.DateTime);
-                schedule.NextRunAt = ToUtcOffset(nextRun).ToString("O");
-                schedule.NextRunLocal = nextRun.ToString("yyyy-MM-dd HH:mm:ss");
+                SetNextRun(schedule, nextRun);
             }
             else
             {
                 schedule.NextRunAt = null;
                 schedule.NextRunLocal = null;
+                schedule.NextWaterTime = 0;
             }
 
             await SaveScheduleCopiesAsync(schedule, CancellationToken.None);
@@ -258,6 +262,15 @@ namespace IoTAgriculture.Services
                 var insideWindow = IsInsideOperatingWindow(schedule, nowLocal);
                 var activeUntil = ParseLocalDateTime(schedule.ActiveUntilLocal);
                 var activeSource = NormalizeSource(schedule.ActiveSource);
+                var threshold = EvaluateThreshold(schedule, devices);
+                var cooldownComplete = IsCooldownComplete(schedule, nowUtc);
+                var diagnosticsChanged = UpdateAutomationDiagnostics(
+                    schedule,
+                    threshold,
+                    cooldownComplete,
+                    nowUtc,
+                    nowLocal,
+                    activeSource);
 
                 if (activeUntil.HasValue)
                 {
@@ -277,10 +290,17 @@ namespace IoTAgriculture.Services
                             activeSource ?? ScheduleSource,
                             null,
                             ActorForSource(activeSource),
-                            cancellationToken);
+                            cancellationToken,
+                            reason: activeUntil.Value <= nowLocal
+                                ? "Đã hết thời lượng tưới tự động."
+                                : "Chế độ tự động đã tắt hoặc ngoài khung giờ hoạt động.");
                         schedule.ActiveUntilAt = null;
                         schedule.ActiveUntilLocal = null;
                         schedule.ActiveSource = null;
+                        await SaveScheduleCopiesAsync(schedule, cancellationToken);
+                    }
+                    else if (diagnosticsChanged)
+                    {
                         await SaveScheduleCopiesAsync(schedule, cancellationToken);
                     }
 
@@ -296,6 +316,10 @@ namespace IoTAgriculture.Services
                         IsScheduleDue(schedule, nowLocal))
                     {
                         AdvanceNextScheduleSlot(schedule, nowLocal);
+                        diagnosticsChanged = true;
+                    }
+                    if (diagnosticsChanged)
+                    {
                         await SaveScheduleCopiesAsync(schedule, cancellationToken);
                     }
                     return;
@@ -309,17 +333,24 @@ namespace IoTAgriculture.Services
                     triggerSource = ScheduleSource;
                 }
                 else if (schedule.SmartEnabled &&
-                    IsThresholdViolated(schedule, devices) &&
-                    IsCooldownComplete(schedule, nowUtc))
+                    threshold.IsViolated &&
+                    cooldownComplete)
                 {
                     triggerSource = ThresholdSource;
                 }
 
                 if (triggerSource == null)
                 {
+                    if (diagnosticsChanged)
+                    {
+                        await SaveScheduleCopiesAsync(schedule, cancellationToken);
+                    }
                     return;
                 }
 
+                var triggerReason = triggerSource == ScheduleSource
+                    ? BuildScheduleReason(schedule)
+                    : threshold.Reason;
                 var changed = await SetRelayIfChangedCoreAsync(
                     pumpKey,
                     "relay2",
@@ -327,7 +358,9 @@ namespace IoTAgriculture.Services
                     triggerSource,
                     null,
                     ActorForSource(triggerSource),
-                    cancellationToken);
+                    cancellationToken,
+                    triggerReason,
+                    triggerSource == ThresholdSource ? threshold : null);
                 if (!changed)
                 {
                     return;
@@ -338,6 +371,10 @@ namespace IoTAgriculture.Services
                 schedule.ActiveUntilLocal = stopAtLocal.ToString("yyyy-MM-dd HH:mm:ss");
                 schedule.ActiveSource = triggerSource;
                 schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
+                if (triggerSource == ThresholdSource)
+                {
+                    schedule.ThresholdStatus = "watering";
+                }
 
                 if (triggerSource == ScheduleSource)
                 {
@@ -368,7 +405,9 @@ namespace IoTAgriculture.Services
             string source,
             string? actorUserId,
             string actorName,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? reason = null,
+            ThresholdEvaluation? threshold = null)
         {
             var state = await _firebase.GetAsync<PumpStateDto>(
                 $"devices/{pumpKey}",
@@ -390,6 +429,12 @@ namespace IoTAgriculture.Services
                 Source = source,
                 ActorUserId = actorUserId,
                 ActorName = actorName,
+                Reason = reason,
+                SensorKey = threshold?.SensorKey,
+                Temperature = threshold?.Temperature,
+                Humidity = threshold?.Humidity,
+                TemperatureThreshold = threshold?.TemperatureThreshold,
+                HumidityThreshold = threshold?.HumidityThreshold,
                 Timestamp = nowUtc.ToUnixTimeMilliseconds(),
                 UtcTime = nowUtc.ToString("O"),
                 LocalTime = nowLocal.ToString("yyyy-MM-dd HH:mm:ss")
@@ -409,6 +454,7 @@ namespace IoTAgriculture.Services
                     [$"devices/{pumpKey}/lastActionLocal"] = nowLocal.ToString("yyyy-MM-dd HH:mm:ss"),
                     [$"devices/{pumpKey}/lastActionSource"] = source,
                     [$"devices/{pumpKey}/lastActionBy"] = actorName,
+                    [$"devices/{pumpKey}/lastActionReason"] = reason,
                     [$"pumpLogs/{pumpKey}/{logKey}"] = logEntry
                 },
                 cancellationToken);
@@ -479,50 +525,162 @@ namespace IoTAgriculture.Services
                 ActiveSource = NormalizeSource(runtime.ActiveSource ?? config.ActiveSource),
                 NextRunAt = runtime.NextRunAt ?? config.NextRunAt,
                 NextRunLocal = runtime.NextRunLocal ?? config.NextRunLocal,
+                NextWaterTime = Math.Max(runtime.NextWaterTime, config.NextWaterTime),
                 UpdatedAt = config.UpdatedAt,
                 UpdatedLocal = config.UpdatedLocal,
                 LastSmartRunAt = runtime.LastSmartRunAt ?? config.LastSmartRunAt,
                 LastSmartRunLocal = runtime.LastSmartRunLocal ?? config.LastSmartRunLocal,
                 LastTriggeredAt = runtime.LastTriggeredAt ?? config.LastTriggeredAt,
                 LastTriggeredLocal = runtime.LastTriggeredLocal ?? config.LastTriggeredLocal,
-                LastWaterTime = Math.Max(runtime.LastWaterTime, config.LastWaterTime)
+                LastWaterTime = Math.Max(runtime.LastWaterTime, config.LastWaterTime),
+                ThresholdConditionActive = runtime.ThresholdConditionActive,
+                ThresholdStatus = runtime.ThresholdStatus,
+                ThresholdReason = runtime.ThresholdReason,
+                AutomationLastCheckedAt = runtime.AutomationLastCheckedAt,
+                AutomationLastCheckedLocal = runtime.AutomationLastCheckedLocal
             };
             schedule.DurationMinutes ??= Math.Max(
                 1,
                 (int)Math.Ceiling(schedule.DurationSeconds / 60d));
             schedule.StartHour ??= ParseTimeOfDay(schedule.StartTime).Hours;
             schedule.EndHour ??= ParseTimeOfDay(schedule.EndTime).Hours;
+            if (schedule.NextWaterTime == 0 &&
+                ParseUtcDateTimeOffset(schedule.NextRunAt) is { } nextRun)
+            {
+                schedule.NextWaterTime = nextRun.ToUnixTimeSeconds();
+            }
             return schedule;
         }
 
-        private static bool IsThresholdViolated(
+        private static ThresholdEvaluation EvaluateThreshold(
             AutoIrrigationScheduleDto schedule,
             IReadOnlyDictionary<string, AutomationDeviceStateDto> devices)
         {
             AutomationDeviceStateDto? sensor = null;
+            string? sensorKey = null;
             if (!string.IsNullOrWhiteSpace(schedule.SensorKey))
             {
-                devices.TryGetValue(schedule.SensorKey, out sensor);
+                sensorKey = schedule.SensorKey;
+                devices.TryGetValue(sensorKey, out sensor);
+            }
+            else
+            {
+                var fallback = devices.FirstOrDefault(x =>
+                    x.Value?.Temperature.HasValue == true ||
+                    x.Value?.Humidity.HasValue == true ||
+                    x.Value?.GroundHumidity.HasValue == true);
+                sensorKey = fallback.Key;
+                sensor = fallback.Value;
             }
 
-            sensor ??= devices.Values.FirstOrDefault(x =>
-                x?.Temperature.HasValue == true ||
-                x?.Humidity.HasValue == true ||
-                x?.GroundHumidity.HasValue == true);
+            if (sensor == null)
+            {
+                return new ThresholdEvaluation(
+                    false,
+                    false,
+                    sensorKey,
+                    null,
+                    null,
+                    schedule.AirTempMax,
+                    schedule.AirHumidityThreshold,
+                    string.IsNullOrWhiteSpace(sensorKey)
+                        ? "Chưa cấu hình cảm biến cho ngưỡng tưới."
+                        : $"Không tìm thấy dữ liệu cảm biến {sensorKey}.");
+            }
 
             var soilViolation = schedule.SoilMoistureThresholdEnabled &&
-                sensor?.GroundHumidity.HasValue == true &&
+                sensor.GroundHumidity.HasValue &&
                 schedule.SoilMoistureThreshold.HasValue &&
                 sensor.GroundHumidity.Value < schedule.SoilMoistureThreshold.Value;
             var temperatureViolation = schedule.AirTempThresholdEnabled &&
-                sensor?.Temperature.HasValue == true &&
+                sensor.Temperature.HasValue &&
                 schedule.AirTempMax.HasValue &&
                 (decimal)sensor.Temperature.Value > schedule.AirTempMax.Value;
             var humidityViolation = schedule.AirHumidityThresholdEnabled &&
-                sensor?.Humidity.HasValue == true &&
+                sensor.Humidity.HasValue &&
                 schedule.AirHumidityThreshold.HasValue &&
                 sensor.Humidity.Value < schedule.AirHumidityThreshold.Value;
-            return soilViolation || temperatureViolation || humidityViolation;
+            var hasRequiredReading =
+                (!schedule.SoilMoistureThresholdEnabled || sensor.GroundHumidity.HasValue) &&
+                (!schedule.AirTempThresholdEnabled || sensor.Temperature.HasValue) &&
+                (!schedule.AirHumidityThresholdEnabled || sensor.Humidity.HasValue);
+
+            var reasons = new List<string>();
+            if (temperatureViolation)
+            {
+                reasons.Add(
+                    $"Nhiệt độ {sensor.Temperature!.Value:0.##}°C > {schedule.AirTempMax!.Value:0.##}°C");
+            }
+            if (humidityViolation)
+            {
+                reasons.Add(
+                    $"Độ ẩm không khí {sensor.Humidity!.Value:0.##}% < {schedule.AirHumidityThreshold!.Value}%");
+            }
+            if (soilViolation)
+            {
+                reasons.Add(
+                    $"Độ ẩm đất {sensor.GroundHumidity!.Value:0.##}% < {schedule.SoilMoistureThreshold!.Value}%");
+            }
+
+            var violated = soilViolation || temperatureViolation || humidityViolation;
+            var reason = violated
+                ? string.Join("; ", reasons)
+                : hasRequiredReading
+                    ? "Các giá trị cảm biến đang nằm trong ngưỡng an toàn."
+                    : "Cảm biến chưa có đủ giá trị cho các điều kiện đã bật.";
+            return new ThresholdEvaluation(
+                hasRequiredReading,
+                violated,
+                sensorKey,
+                sensor.Temperature,
+                sensor.Humidity,
+                schedule.AirTempMax,
+                schedule.AirHumidityThreshold,
+                reason);
+        }
+
+        private static bool UpdateAutomationDiagnostics(
+            AutoIrrigationScheduleDto schedule,
+            ThresholdEvaluation threshold,
+            bool cooldownComplete,
+            DateTimeOffset nowUtc,
+            DateTime nowLocal,
+            string? activeSource)
+        {
+            var status = !schedule.SmartEnabled
+                ? "disabled"
+                : !threshold.HasRequiredReading
+                    ? "sensor-unavailable"
+                    : !threshold.IsViolated
+                        ? "condition-clear"
+                        : activeSource == ThresholdSource
+                            ? "watering"
+                            : cooldownComplete
+                                ? "ready"
+                                : "cooldown";
+            var lastChecked = ParseUtcDateTimeOffset(schedule.AutomationLastCheckedAt);
+            var stale = !lastChecked.HasValue ||
+                nowUtc - lastChecked.Value >= DiagnosticsWriteInterval;
+            var changed =
+                schedule.ThresholdConditionActive != threshold.IsViolated ||
+                !string.Equals(schedule.ThresholdStatus, status, StringComparison.Ordinal) ||
+                !string.Equals(schedule.ThresholdReason, threshold.Reason, StringComparison.Ordinal) ||
+                stale;
+
+            schedule.ThresholdConditionActive = threshold.IsViolated;
+            schedule.ThresholdStatus = status;
+            schedule.ThresholdReason = threshold.Reason;
+            if (changed)
+            {
+                schedule.AutomationLastCheckedAt = nowUtc.ToString("O");
+                schedule.AutomationLastCheckedLocal = nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
+            }
+            return changed;
+        }
+
+        private static string BuildScheduleReason(AutoIrrigationScheduleDto schedule)
+        {
+            return $"Đến lịch tưới, chu kỳ {Math.Max(1, schedule.IntervalMinutes)} phút.";
         }
 
         private static bool IsCooldownComplete(
@@ -552,8 +710,17 @@ namespace IoTAgriculture.Services
             var next = CalculateNextRun(
                 schedule,
                 nowLocal.AddMilliseconds(1));
-            schedule.NextRunAt = ToUtcOffset(next).ToString("O");
-            schedule.NextRunLocal = next.ToString("yyyy-MM-dd HH:mm:ss");
+            SetNextRun(schedule, next);
+        }
+
+        private static void SetNextRun(
+            AutoIrrigationScheduleDto schedule,
+            DateTime nextLocal)
+        {
+            var nextUtc = ToUtcOffset(nextLocal);
+            schedule.NextRunAt = nextUtc.ToString("O");
+            schedule.NextRunLocal = nextLocal.ToString("yyyy-MM-dd HH:mm:ss");
+            schedule.NextWaterTime = nextUtc.ToUnixTimeSeconds();
         }
 
         private static DateTime CalculateNextRun(
@@ -669,8 +836,8 @@ namespace IoTAgriculture.Services
         private static string ActorForSource(string? source)
         {
             return NormalizeSource(source) == ThresholdSource
-                ? ThresholdActor
-                : ScheduleActor;
+                ? "Auto - Ngưỡng tưới"
+                : "Auto - Lịch tưới";
         }
 
         private static string CleanKey(string value, string parameterName)
@@ -718,6 +885,16 @@ namespace IoTAgriculture.Services
             var offset = VietnamTimeZone.GetUtcOffset(localTime);
             return new DateTimeOffset(localTime, offset).ToUniversalTime();
         }
+
+        private sealed record ThresholdEvaluation(
+            bool HasRequiredReading,
+            bool IsViolated,
+            string? SensorKey,
+            double? Temperature,
+            double? Humidity,
+            decimal? TemperatureThreshold,
+            int? HumidityThreshold,
+            string Reason);
 
         private static TimeZoneInfo ResolveVietnamTimeZone()
         {
