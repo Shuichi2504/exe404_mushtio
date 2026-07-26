@@ -297,11 +297,11 @@ namespace IoTAgriculture.Services
                         schedule.ActiveUntilAt = null;
                         schedule.ActiveUntilLocal = null;
                         schedule.ActiveSource = null;
-                        await SaveScheduleCopiesAsync(schedule, cancellationToken);
+                        await SaveAutomationStateAsync(schedule, cancellationToken);
                     }
                     else if (diagnosticsChanged)
                     {
-                        await SaveScheduleCopiesAsync(schedule, cancellationToken);
+                        await SaveAutomationStateAsync(schedule, cancellationToken);
                     }
 
                     return;
@@ -320,7 +320,7 @@ namespace IoTAgriculture.Services
                     }
                     if (diagnosticsChanged)
                     {
-                        await SaveScheduleCopiesAsync(schedule, cancellationToken);
+                        await SaveAutomationStateAsync(schedule, cancellationToken);
                     }
                     return;
                 }
@@ -343,7 +343,7 @@ namespace IoTAgriculture.Services
                 {
                     if (diagnosticsChanged)
                     {
-                        await SaveScheduleCopiesAsync(schedule, cancellationToken);
+                        await SaveAutomationStateAsync(schedule, cancellationToken);
                     }
                     return;
                 }
@@ -390,7 +390,7 @@ namespace IoTAgriculture.Services
                     schedule.LastSmartRunLocal = schedule.LastTriggeredLocal;
                 }
 
-                await SaveScheduleCopiesAsync(schedule, cancellationToken);
+                await SaveAutomationStateAsync(schedule, cancellationToken);
             }
             finally
             {
@@ -474,6 +474,24 @@ namespace IoTAgriculture.Services
             await _firebase.SetAsync(
                 $"pumpSchedules/{schedule.PumpKey}/{schedule.RelayKey}",
                 schedule,
+                cancellationToken);
+        }
+
+        private async Task SaveAutomationStateAsync(
+            AutoIrrigationScheduleDto schedule,
+            CancellationToken cancellationToken)
+        {
+            await SaveScheduleCopiesAsync(schedule, cancellationToken);
+            await _firebase.PatchAsync(
+                $"devices/{schedule.PumpKey}",
+                new Dictionary<string, object?>
+                {
+                    ["engineStatus"] = "running",
+                    ["engineLastCheckedAt"] = schedule.AutomationLastCheckedAt,
+                    ["engineLastCheckedLocal"] = schedule.AutomationLastCheckedLocal,
+                    ["engineMessage"] = schedule.ThresholdReason,
+                    ["engineVersion"] = "backend-v2"
+                },
                 cancellationToken);
         }
 
