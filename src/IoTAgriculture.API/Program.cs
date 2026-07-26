@@ -65,7 +65,7 @@ app.MapGet("/api/health", (
     DatabaseInitializationHealth databaseHealth) => Results.Ok(new
 {
     status = "healthy",
-    app = "MUSHTIO1",
+    app = "IoTAgriculture",
     timestamp = DateTimeOffset.UtcNow,
     automation = automationHealth.Snapshot(),
     database = databaseHealth.Snapshot()
