@@ -88,6 +88,9 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("nextRunLocal")]
         public string? NextRunLocal { get; set; }
 
+        [JsonPropertyName("nextWaterTime")]
+        public long NextWaterTime { get; set; }
+
         [JsonPropertyName("updatedAt")]
         public string? UpdatedAt { get; set; }
 
@@ -108,5 +111,20 @@ namespace IoTAgriculture.DTOs.Firebase
 
         [JsonPropertyName("lastWaterTime")]
         public long LastWaterTime { get; set; }
+
+        [JsonPropertyName("thresholdConditionActive")]
+        public bool ThresholdConditionActive { get; set; }
+
+        [JsonPropertyName("thresholdStatus")]
+        public string ThresholdStatus { get; set; } = "not-checked";
+
+        [JsonPropertyName("thresholdReason")]
+        public string? ThresholdReason { get; set; }
+
+        [JsonPropertyName("automationLastCheckedAt")]
+        public string? AutomationLastCheckedAt { get; set; }
+
+        [JsonPropertyName("automationLastCheckedLocal")]
+        public string? AutomationLastCheckedLocal { get; set; }
     }
 }
