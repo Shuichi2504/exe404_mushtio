@@ -82,6 +82,12 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("activeSource")]
         public string? ActiveSource { get; set; }
 
+        [JsonPropertyName("manualOverrideUntilAt")]
+        public string? ManualOverrideUntilAt { get; set; }
+
+        [JsonPropertyName("manualOverrideUntilLocal")]
+        public string? ManualOverrideUntilLocal { get; set; }
+
         [JsonPropertyName("nextRunAt")]
         public string? NextRunAt { get; set; }
 
