@@ -12,14 +12,24 @@ namespace IoTAgriculture.Services
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
         private static readonly ConcurrentDictionary<string, SemaphoreSlim> DeviceLocks = new();
         private readonly IFirebaseRtdbService _firebase;
+        private readonly IFirebasePushNotificationService? _pushNotifications;
         private readonly ILogger<DeviceService> _logger;
 
         public DeviceService(
             IFirebaseRtdbService firebase,
             ILogger<DeviceService> logger)
+            : this(firebase, logger, null)
+        {
+        }
+
+        public DeviceService(
+            IFirebaseRtdbService firebase,
+            ILogger<DeviceService> logger,
+            IFirebasePushNotificationService? pushNotifications)
         {
             _firebase = firebase;
             _logger = logger;
+            _pushNotifications = pushNotifications;
         }
 
         public Task<PumpStateDto?> GetPumpStateAsync(string pumpKey)
@@ -645,6 +655,45 @@ namespace IoTAgriculture.Services
                 source,
                 pumpKey,
                 logKey);
+
+            if (relayKey == "relay2" && _pushNotifications != null)
+            {
+                try
+                {
+                    _logger.LogInformation(
+                        "[PumpPush] pump={PumpKey}; relay=relay2; value={RelayValue}; source={Source}; notification=dispatching",
+                        pumpKey,
+                        value,
+                        source);
+                    await _pushNotifications.SendPumpStateChangedAsync(
+                        pumpKey,
+                        string.IsNullOrWhiteSpace(state?.DeviceName)
+                            ? pumpKey
+                            : state.DeviceName,
+                        value,
+                        source,
+                        actorName,
+                        reason,
+                        cancellationToken);
+                    _logger.LogInformation(
+                        "[PumpPush] pump={PumpKey}; relay=relay2; value={RelayValue}; source={Source}; notification=sent",
+                        pumpKey,
+                        value,
+                        source);
+                }
+                catch (Exception ex)
+                {
+                    // The relay transition and its activity log are already
+                    // committed atomically. A notification outage must never
+                    // roll back or disturb irrigation automation.
+                    _logger.LogError(
+                        ex,
+                        "[PumpPush] pump={PumpKey}; relay=relay2; value={RelayValue}; source={Source}; notification=failed",
+                        pumpKey,
+                        value,
+                        source);
+                }
+            }
             return true;
         }
 

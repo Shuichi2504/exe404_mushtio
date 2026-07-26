@@ -12,6 +12,8 @@ namespace IoTAgriculture.Controllers
     [Route("api/logbooks")]
     public class LogbookController : ControllerBase
     {
+        private const string ExcelContentType =
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
         private readonly ILogbookService _service;
         private readonly IAuthService _authService;
         private readonly IoTDbContext _db;
@@ -58,6 +60,59 @@ namespace IoTAgriculture.Controllers
                 Encoding.UTF8.GetBytes(BuildCsv(filtered)),
                 "text/csv; charset=utf-8",
                 $"logbook-{filtered.Date}.csv");
+        }
+
+        [HttpGet("today/xlsx")]
+        public async Task<IActionResult> ExportTodayExcel(CancellationToken cancellationToken)
+        {
+            var today = TodayInVietnam();
+            var logbook = await _service.GenerateDailyLogbookAsync(today, cancellationToken);
+            var filtered = await FilterForCurrentUserAsync(logbook, cancellationToken);
+            if (filtered == null) return Unauthorized();
+
+            var localNow = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
+            return File(
+                _service.CreateExcelWorkbook(filtered),
+                ExcelContentType,
+                $"logbook-{filtered.Date}-{localNow:HHmm}.xlsx");
+        }
+
+        [HttpGet("exports")]
+        public async Task<IActionResult> GetAutoExports(CancellationToken cancellationToken)
+        {
+            var profile = await _authService.GetProfileAsync(ReadBearerToken());
+            if (profile == null) return Unauthorized();
+
+            return Ok(_service.GetAutoExportFileNames().Select(fileName => new
+            {
+                fileName,
+                date = fileName.Substring("logbook-".Length, 10)
+            }));
+        }
+
+        [HttpGet("exports/{fileName}")]
+        public async Task<IActionResult> DownloadAutoExport(
+            string fileName,
+            CancellationToken cancellationToken)
+        {
+            if (!_service.GetAutoExportFileNames().Contains(
+                    fileName,
+                    StringComparer.OrdinalIgnoreCase) ||
+                fileName.Length < 18 ||
+                !DateOnly.TryParse(fileName.Substring("logbook-".Length, 10), out var date))
+            {
+                return NotFound();
+            }
+
+            var logbook = await _service.GetDailyLogbookAsync(date, cancellationToken)
+                ?? await _service.GenerateDailyLogbookAsync(date, cancellationToken);
+            var filtered = await FilterForCurrentUserAsync(logbook, cancellationToken);
+            if (filtered == null) return Unauthorized();
+
+            return File(
+                _service.CreateExcelWorkbook(filtered),
+                ExcelContentType,
+                fileName);
         }
 
         [HttpGet("{date}")]
@@ -110,6 +165,30 @@ namespace IoTAgriculture.Controllers
                 Encoding.UTF8.GetBytes(BuildCsv(filtered)),
                 "text/csv; charset=utf-8",
                 $"logbook-{filtered.Date}.csv");
+        }
+
+        [HttpGet("{date}/xlsx")]
+        public async Task<IActionResult> ExportExcel(
+            string date,
+            CancellationToken cancellationToken)
+        {
+            if (!DateOnly.TryParse(date, out var parsed))
+            {
+                return BadRequest(new { message = "Date must be yyyy-MM-dd." });
+            }
+
+            var logbook = parsed == TodayInVietnam()
+                ? await _service.GenerateDailyLogbookAsync(parsed, cancellationToken)
+                : await _service.GetDailyLogbookAsync(parsed, cancellationToken)
+                    ?? await _service.GenerateDailyLogbookAsync(parsed, cancellationToken);
+            var filtered = await FilterForCurrentUserAsync(logbook, cancellationToken);
+            if (filtered == null) return Unauthorized();
+
+            var localNow = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
+            return File(
+                _service.CreateExcelWorkbook(filtered),
+                ExcelContentType,
+                $"logbook-{filtered.Date}-{localNow:HHmm}.xlsx");
         }
 
         private async Task<DailyLogbookDto?> FilterForCurrentUserAsync(

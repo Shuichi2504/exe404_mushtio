@@ -9,14 +9,24 @@ namespace IoTAgriculture.Services
     public class LogbookService : ILogbookService
     {
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
-        private static readonly TimeSpan AutoExportStart = new(17, 0, 0);
+        private static readonly SemaphoreSlim ExportLock = new(1, 1);
         private readonly IFirebaseRtdbService _firebase;
         private readonly string _exportDirectory;
+        private readonly TimeSpan _autoExportAt;
 
-        public LogbookService(IFirebaseRtdbService firebase)
+        public LogbookService(
+            IFirebaseRtdbService firebase,
+            IConfiguration? configuration = null)
         {
             _firebase = firebase;
-            _exportDirectory = Path.Combine(AppContext.BaseDirectory, "exports");
+            var configuredDirectory = configuration?["LogbookAutoGenerate:ExportDirectory"];
+            _exportDirectory = string.IsNullOrWhiteSpace(configuredDirectory)
+                ? Path.Combine(AppContext.BaseDirectory, "exports", "logbooks")
+                : Path.GetFullPath(configuredDirectory, AppContext.BaseDirectory);
+            _autoExportAt = new TimeSpan(
+                Math.Clamp(configuration?.GetValue("LogbookAutoGenerate:HourVn", 17) ?? 17, 0, 23),
+                Math.Clamp(configuration?.GetValue("LogbookAutoGenerate:MinuteVn", 0) ?? 0, 0, 59),
+                0);
         }
 
         public async Task CaptureSensorSnapshotsAsync(CancellationToken cancellationToken = default)
@@ -75,24 +85,82 @@ namespace IoTAgriculture.Services
         public async Task<string?> ExportTodayLogbookAsync(CancellationToken cancellationToken = default)
         {
             var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, VietnamTimeZone);
-            if (!ShouldAutoExport(nowLocal.DateTime))
+            if (nowLocal.TimeOfDay < _autoExportAt)
             {
                 return null;
             }
 
             var today = DateOnly.FromDateTime(nowLocal.Date);
-            var logbook = await GetDailyLogbookAsync(today, cancellationToken)
-                ?? await GenerateDailyLogbookAsync(today, cancellationToken);
+            return await ExportDailyLogbookAsync(today, nowLocal, cancellationToken);
+        }
 
-            Directory.CreateDirectory(_exportDirectory);
-            var filePath = Path.Combine(_exportDirectory, $"logbook-{logbook.Date}.csv");
-            if (File.Exists(filePath))
+        public async Task<string> ExportDailyLogbookAsync(
+            DateOnly date,
+            DateTimeOffset fileTimestampLocal,
+            CancellationToken cancellationToken = default)
+        {
+            await ExportLock.WaitAsync(cancellationToken);
+            try
             {
+                Directory.CreateDirectory(_exportDirectory);
+                var existing = Directory
+                    .EnumerateFiles(_exportDirectory, $"logbook-{date:yyyy-MM-dd}-*.xlsx")
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .FirstOrDefault();
+                if (existing != null)
+                {
+                    return existing;
+                }
+
+                // Always regenerate at the scheduled boundary so the workbook
+                // contains every snapshot collected up to that run.
+                var logbook = await GenerateDailyLogbookAsync(date, cancellationToken);
+                var fileName =
+                    $"logbook-{date:yyyy-MM-dd}-{fileTimestampLocal:HHmm}.xlsx";
+                var filePath = Path.Combine(_exportDirectory, fileName);
+                var temporaryPath = filePath + $".{Guid.NewGuid():N}.tmp";
+
+                try
+                {
+                    await File.WriteAllBytesAsync(
+                        temporaryPath,
+                        CreateExcelWorkbook(logbook),
+                        cancellationToken);
+                    File.Move(temporaryPath, filePath, overwrite: false);
+                }
+                finally
+                {
+                    if (File.Exists(temporaryPath))
+                    {
+                        File.Delete(temporaryPath);
+                    }
+                }
+
                 return filePath;
             }
+            finally
+            {
+                ExportLock.Release();
+            }
+        }
 
-            await File.WriteAllTextAsync(filePath, BuildCsv(logbook), Encoding.UTF8, cancellationToken);
-            return filePath;
+        public byte[] CreateExcelWorkbook(DailyLogbookDto logbook) =>
+            LogbookExcelWriter.Create(logbook);
+
+        public IReadOnlyList<string> GetAutoExportFileNames()
+        {
+            if (!Directory.Exists(_exportDirectory))
+            {
+                return [];
+            }
+
+            return Directory
+                .EnumerateFiles(_exportDirectory, "logbook-????-??-??-????.xlsx")
+                .Select(Path.GetFileName)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Cast<string>()
+                .OrderByDescending(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         public Task<DailyLogbookDto?> GetDailyLogbookAsync(
@@ -410,11 +478,6 @@ namespace IoTAgriculture.Services
             var end = new TimeSpan(18, 0, 0);
 
             return timeOfDay >= start && timeOfDay < end;
-        }
-
-        private static bool ShouldAutoExport(DateTime localTime)
-        {
-            return localTime.TimeOfDay >= AutoExportStart;
         }
 
         private static string BuildCsv(DailyLogbookDto logbook)

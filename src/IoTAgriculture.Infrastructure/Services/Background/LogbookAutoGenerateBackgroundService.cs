@@ -21,6 +21,18 @@ namespace IoTAgriculture.Services
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            var startupUtc = DateTimeOffset.UtcNow;
+            var startupVn = ToVietnamTime(startupUtc);
+            var scheduledTodayVn = GetScheduledRunVn(startupVn);
+            if (startupVn >= scheduledTodayVn)
+            {
+                await ExportForDateAsync(
+                    DateOnly.FromDateTime(startupVn.Date),
+                    scheduledTodayVn,
+                    "startup catch-up",
+                    stoppingToken);
+            }
+
             while (!stoppingToken.IsCancellationRequested)
             {
                 var nextRunUtc = GetNextRunUtc(DateTimeOffset.UtcNow);
@@ -49,32 +61,11 @@ namespace IoTAgriculture.Services
                     var runUtc = DateTimeOffset.UtcNow;
                     var runVn = ToVietnamTime(runUtc);
                     var date = DateOnly.FromDateTime(runVn.Date);
-
-                    _logger.LogInformation(
-                        "Starting automatic logbook generation at {RunUtc} UTC ({RunVn} VN) for {Date}.",
-                        runUtc,
-                        runVn,
-                        date);
-
-                    using var scope = _scopeFactory.CreateScope();
-                    var logbookService = scope.ServiceProvider.GetRequiredService<ILogbookService>();
-                    var logbook = await logbookService.GenerateDailyLogbookAsync(date, stoppingToken);
-
-                    var recordCount = logbook.Records.Count;
-                    var deviceCount = logbook.Records
-                        .Select(x => x.DeviceKey)
-                        .Where(x => !string.IsNullOrWhiteSpace(x))
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .Count();
-
-                    var completedUtc = DateTimeOffset.UtcNow;
-                    _logger.LogInformation(
-                        "Completed automatic logbook generation at {RunUtc} UTC ({RunVn} VN) for {Date}. Records: {RecordCount}. Devices: {DeviceCount}.",
-                        completedUtc,
-                        ToVietnamTime(completedUtc),
-                        logbook.Date,
-                        recordCount,
-                        deviceCount);
+                    await ExportForDateAsync(
+                        date,
+                        GetScheduledRunVn(runVn),
+                        "scheduled run",
+                        stoppingToken);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
@@ -87,23 +78,51 @@ namespace IoTAgriculture.Services
             }
         }
 
+        private async Task ExportForDateAsync(
+            DateOnly date,
+            DateTimeOffset fileTimestampVn,
+            string trigger,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                _logger.LogInformation(
+                    "Starting automatic logbook Excel export. Trigger: {Trigger}; RunUtc: {RunUtc}; RunVn: {RunVn}; Date: {Date}.",
+                    trigger,
+                    DateTimeOffset.UtcNow,
+                    ToVietnamTime(DateTimeOffset.UtcNow),
+                    date);
+
+                using var scope = _scopeFactory.CreateScope();
+                var logbookService = scope.ServiceProvider.GetRequiredService<ILogbookService>();
+                var filePath = await logbookService.ExportDailyLogbookAsync(
+                    date,
+                    fileTimestampVn,
+                    cancellationToken);
+
+                _logger.LogInformation(
+                    "Completed automatic logbook Excel export. Date: {Date}; File: {FilePath}.",
+                    date,
+                    filePath);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Normal application shutdown.
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Failed to automatically export logbook Excel for {Date}.",
+                    date);
+            }
+        }
+
         private DateTimeOffset GetNextRunUtc(DateTimeOffset nowUtc)
         {
-            var hourVn = _configuration.GetValue("LogbookAutoGenerate:HourVn", 17);
-            var minuteVn = _configuration.GetValue("LogbookAutoGenerate:MinuteVn", 0);
-            hourVn = Math.Clamp(hourVn, 0, 23);
-            minuteVn = Math.Clamp(minuteVn, 0, 59);
-
             var vietnamOffset = TimeSpan.FromHours(VietnamUtcOffsetHours);
             var nowVn = nowUtc.ToOffset(vietnamOffset);
-            var nextRunVn = new DateTimeOffset(
-                nowVn.Year,
-                nowVn.Month,
-                nowVn.Day,
-                hourVn,
-                minuteVn,
-                0,
-                vietnamOffset);
+            var nextRunVn = GetScheduledRunVn(nowVn);
 
             if (nowVn >= nextRunVn)
             {
@@ -111,6 +130,26 @@ namespace IoTAgriculture.Services
             }
 
             return nextRunVn.ToUniversalTime();
+        }
+
+        private DateTimeOffset GetScheduledRunVn(DateTimeOffset localDate)
+        {
+            var hourVn = Math.Clamp(
+                _configuration.GetValue("LogbookAutoGenerate:HourVn", 17),
+                0,
+                23);
+            var minuteVn = Math.Clamp(
+                _configuration.GetValue("LogbookAutoGenerate:MinuteVn", 0),
+                0,
+                59);
+            return new DateTimeOffset(
+                localDate.Year,
+                localDate.Month,
+                localDate.Day,
+                hourVn,
+                minuteVn,
+                0,
+                TimeSpan.FromHours(VietnamUtcOffsetHours));
         }
 
         private static DateTimeOffset ToVietnamTime(DateTimeOffset dateTime)

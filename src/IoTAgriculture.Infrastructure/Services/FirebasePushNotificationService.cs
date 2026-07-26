@@ -218,6 +218,39 @@ namespace IoTAgriculture.Services
             }
         }
 
+        public Task SendPumpStateChangedAsync(
+            string deviceKey,
+            string deviceName,
+            bool isOn,
+            string source,
+            string actorName,
+            string? reason,
+            CancellationToken cancellationToken = default)
+        {
+            var sourceLabel = source.ToLowerInvariant() switch
+            {
+                "manual" => $"Thủ công — bởi {actorName}",
+                "schedule" => "Lịch tưới",
+                "threshold" => "Ngưỡng tưới",
+                _ => actorName
+            };
+            var details = string.IsNullOrWhiteSpace(reason)
+                ? sourceLabel
+                : $"{sourceLabel} — {reason}";
+
+            return SendDeviceAlertAsync(
+                deviceKey,
+                deviceName,
+                isOn ? "pump_on" : "pump_off",
+                "pump",
+                isOn ? "💧 Máy bơm đã BẬT" : "🛑 Máy bơm đã TẮT",
+                details,
+                isOn ? "info" : "normal",
+                isOn ? 1 : 0,
+                null,
+                cancellationToken);
+        }
+
         private async Task<bool> EnsureEnabledAsync(CancellationToken cancellationToken)
         {
             if (_disabled)

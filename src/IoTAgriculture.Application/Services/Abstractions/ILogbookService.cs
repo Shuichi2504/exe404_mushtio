@@ -17,5 +17,14 @@ namespace IoTAgriculture.Services.Interfaces
         Task GenerateTodayLogbookAsync(CancellationToken cancellationToken = default);
 
         Task<string?> ExportTodayLogbookAsync(CancellationToken cancellationToken = default);
+
+        Task<string> ExportDailyLogbookAsync(
+            DateOnly date,
+            DateTimeOffset fileTimestampLocal,
+            CancellationToken cancellationToken = default);
+
+        byte[] CreateExcelWorkbook(DailyLogbookDto logbook);
+
+        IReadOnlyList<string> GetAutoExportFileNames();
     }
 }

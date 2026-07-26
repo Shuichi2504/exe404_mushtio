@@ -13,5 +13,14 @@ namespace IoTAgriculture.Services.Interfaces
             double? value,
             double? threshold,
             CancellationToken cancellationToken = default);
+
+        Task SendPumpStateChangedAsync(
+            string deviceKey,
+            string deviceName,
+            bool isOn,
+            string source,
+            string actorName,
+            string? reason,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }

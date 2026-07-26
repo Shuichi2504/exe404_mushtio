@@ -4,6 +4,9 @@ namespace IoTAgriculture.DTOs.Firebase
 {
     public class PumpStateDto
     {
+        [JsonPropertyName("device_name")]
+        public string? DeviceName { get; set; }
+
         [JsonPropertyName("relay1")]
         public bool? Relay1 { get; set; }
 
