@@ -24,5 +24,20 @@ namespace IoTAgriculture.DTOs.Firebase
 
         [JsonPropertyName("lastActionReason")]
         public string? LastActionReason { get; set; }
+
+        [JsonPropertyName("engineStatus")]
+        public string? EngineStatus { get; set; }
+
+        [JsonPropertyName("engineLastCheckedAt")]
+        public string? EngineLastCheckedAt { get; set; }
+
+        [JsonPropertyName("engineLastCheckedLocal")]
+        public string? EngineLastCheckedLocal { get; set; }
+
+        [JsonPropertyName("engineMessage")]
+        public string? EngineMessage { get; set; }
+
+        [JsonPropertyName("engineVersion")]
+        public string? EngineVersion { get; set; }
     }
 }
