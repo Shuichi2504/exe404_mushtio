@@ -6,20 +6,18 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 
-if (string.IsNullOrWhiteSpace(connectionString))
-{
-    throw new InvalidOperationException(
-        "Missing connection string 'ConnectionStrings:DefaultConnection'. " +
-        "Set it in appsettings.json, appsettings.Development.json, or an environment variable.");
-}
-
 builder.Services.AddHttpClient<GeminiService>();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 builder.Services.AddDbContext<IoTDbContext>(options =>
-    options.UseSqlServer(connectionString));
+{
+    if (!string.IsNullOrWhiteSpace(connectionString))
+    {
+        options.UseSqlServer(connectionString);
+    }
+});
 
 builder.Services.AddHttpClient<IFirebaseRtdbService, FirebaseRtdbService>();
 builder.Services.AddScoped<IDeviceService, DeviceService>();
@@ -28,6 +26,9 @@ builder.Services.AddScoped<IEmailSender, EmailSender>();
 builder.Services.AddScoped<IAdminService, AdminService>();
 builder.Services.AddScoped<IAlertService, AlertService>();
 builder.Services.AddScoped<ILogbookService, LogbookService>();
+builder.Services.AddSingleton<AutomationEngineHealth>();
+builder.Services.AddSingleton<DatabaseInitializationHealth>();
+builder.Services.AddHostedService<DatabaseInitializationBackgroundService>();
 builder.Services.AddHostedService<PumpScheduleBackgroundService>();
 builder.Services.AddHostedService<LogbookAutoGenerateBackgroundService>();
 builder.Services.AddSingleton<IFirebasePushNotificationService, FirebasePushNotificationService>();
@@ -59,15 +60,17 @@ app.UseSwagger();
 app.UseCors("FrontendCors");
 app.UseDefaultFiles();
 app.UseStaticFiles();
-app.MapGet("/api/health", () => Results.Ok(new
+app.MapGet("/api/health", (
+    AutomationEngineHealth automationHealth,
+    DatabaseInitializationHealth databaseHealth) => Results.Ok(new
 {
     status = "healthy",
     app = "MUSHTIO1",
-    timestamp = DateTimeOffset.UtcNow
+    timestamp = DateTimeOffset.UtcNow,
+    automation = automationHealth.Snapshot(),
+    database = databaseHealth.Snapshot()
 }));
 app.MapControllers();
 app.MapFallbackToFile("index.html");
-
-await AuthSchemaInitializer.InitializeAsync(app.Services);
 
 app.Run();
