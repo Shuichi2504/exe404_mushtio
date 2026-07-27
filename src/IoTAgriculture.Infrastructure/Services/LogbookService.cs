@@ -59,9 +59,7 @@ namespace IoTAgriculture.Services
                         ?? ReadDouble(device.Value, "airQuality")
                         ?? ReadDouble(device.Value, "air_quanlity"),
                     ground_temperature = ReadLayerDouble(device.Value, "ground", "lower", "temperature"),
-                    top_temperature = ReadLayerDouble(device.Value, "top", "upper", "temperature"),
-                    ground_humidity = ReadLayerDouble(device.Value, "ground", "lower", "humidity"),
-                    top_humidity = ReadLayerDouble(device.Value, "top", "upper", "humidity")
+                    top_temperature = ReadLayerDouble(device.Value, "top", "upper", "temperature")
                 };
 
                 await _firebase.PushAsync(
@@ -284,7 +282,6 @@ namespace IoTAgriculture.Services
         {
             var deviceName = ReadDeviceName(deviceKey, devices);
             var local = TimeZoneInfo.ConvertTime(DateTimeOffset.FromUnixTimeMilliseconds(timestamp), VietnamTimeZone);
-            var groundHumidity = ReadLayerDouble(json, "ground", "lower", "humidity");
 
             return new DailyLogbookRecordDto
             {
@@ -300,9 +297,7 @@ namespace IoTAgriculture.Services
                     ?? ReadDouble(json, "airQuality")
                     ?? ReadDouble(json, "air_quanlity"),
                 GroundTemperature = ReadLayerDouble(json, "ground", "lower", "temperature"),
-                TopTemperature = ReadLayerDouble(json, "top", "upper", "temperature"),
-                GroundHumidity = groundHumidity,
-                TopHumidity = ReadLayerDouble(json, "top", "upper", "humidity")
+                TopTemperature = ReadLayerDouble(json, "top", "upper", "temperature")
             };
         }
 
@@ -340,9 +335,7 @@ namespace IoTAgriculture.Services
                         MinAirQuality = Min(g.Select(x => x.AirQuality)),
                         MaxAirQuality = Max(g.Select(x => x.AirQuality)),
                         GroundTemperature = Average(g.Select(x => x.GroundTemperature)),
-                        TopTemperature = Average(g.Select(x => x.TopTemperature)),
-                        GroundHumidity = Average(g.Select(x => x.GroundHumidity)),
-                        TopHumidity = Average(g.Select(x => x.TopHumidity))
+                        TopTemperature = Average(g.Select(x => x.TopTemperature))
                     };
                 })
                 .Where(x => x.HasValue)
@@ -458,11 +451,7 @@ namespace IoTAgriculture.Services
                 ReadDouble(json, "airQuality") != null ||
                 ReadDouble(json, "air_quanlity") != null ||
                 ReadString(json, "air_status") != null ||
-                ReadString(json, "airStatus") != null ||
-                ReadDouble(json, "ground_humidity") != null ||
-                ReadDouble(json, "groundHumidity") != null ||
-                ReadDouble(json, "top_humidity") != null ||
-                ReadDouble(json, "topHumidity") != null;
+                ReadString(json, "airStatus") != null;
         }
 
         private static DateTimeOffset ToUtcOffset(DateTime localTime)
@@ -483,7 +472,7 @@ namespace IoTAgriculture.Services
         private static string BuildCsv(DailyLogbookDto logbook)
         {
             var builder = new StringBuilder();
-            builder.AppendLine("timestamp,local_time,device_key,device_name,min_temperature,max_temperature,min_humidity,max_humidity,min_air_quality,max_air_quality,ground_temperature,top_temperature,ground_humidity,top_humidity");
+            builder.AppendLine("timestamp,local_time,device_key,device_name,min_temperature,max_temperature,min_humidity,max_humidity,min_air_quality,max_air_quality,ground_temperature,top_temperature");
 
             foreach (var record in logbook.Records)
             {
@@ -498,9 +487,7 @@ namespace IoTAgriculture.Services
                     .Append(Format(record.MinAirQuality)).Append(',')
                     .Append(Format(record.MaxAirQuality)).Append(',')
                     .Append(Format(record.GroundTemperature)).Append(',')
-                    .Append(Format(record.TopTemperature)).Append(',')
-                    .Append(Format(record.GroundHumidity)).Append(',')
-                    .Append(Format(record.TopHumidity))
+                    .Append(Format(record.TopTemperature))
                     .AppendLine();
             }
 

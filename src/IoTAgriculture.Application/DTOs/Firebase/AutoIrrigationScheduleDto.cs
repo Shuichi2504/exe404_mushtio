@@ -43,12 +43,6 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("sensorKey")]
         public string? SensorKey { get; set; }
 
-        [JsonPropertyName("soilMoistureThresholdEnabled")]
-        public bool SoilMoistureThresholdEnabled { get; set; }
-
-        [JsonPropertyName("soilMoistureThreshold")]
-        public int? SoilMoistureThreshold { get; set; }
-
         [JsonPropertyName("airTempThresholdEnabled")]
         public bool AirTempThresholdEnabled { get; set; }
 

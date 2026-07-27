@@ -19,9 +19,7 @@ internal static class LogbookExcelWriter
         "Chất lượng không khí Min (ppm)",
         "Chất lượng không khí Max (ppm)",
         "Nhiệt độ tầng dưới (°C)",
-        "Nhiệt độ tầng trên (°C)",
-        "Độ ẩm tầng dưới (%)",
-        "Độ ẩm tầng trên (%)"
+        "Nhiệt độ tầng trên (°C)"
     ];
 
     public static byte[] Create(DailyLogbookDto logbook)
@@ -66,14 +64,12 @@ internal static class LogbookExcelWriter
             AppendNumberCell(xml, rowNumber, 8, record.MaxAirQuality ?? record.AirQuality);
             AppendNumberCell(xml, rowNumber, 9, record.GroundTemperature);
             AppendNumberCell(xml, rowNumber, 10, record.TopTemperature);
-            AppendNumberCell(xml, rowNumber, 11, record.GroundHumidity);
-            AppendNumberCell(xml, rowNumber, 12, record.TopHumidity);
             xml.Append("</row>");
             rowNumber++;
         }
 
         xml.Append(CultureInfo.InvariantCulture,
-            $"</sheetData><autoFilter ref=\"A1:L{Math.Max(1, rowNumber - 1)}\"/><pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/></worksheet>");
+            $"</sheetData><autoFilter ref=\"A1:J{Math.Max(1, rowNumber - 1)}\"/><pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/></worksheet>");
         return xml.ToString();
     }
 

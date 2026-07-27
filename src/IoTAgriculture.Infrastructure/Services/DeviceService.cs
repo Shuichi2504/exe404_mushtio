@@ -147,8 +147,6 @@ namespace IoTAgriculture.Services
                 SensorKey = string.IsNullOrWhiteSpace(dto.SensorKey)
                     ? existing?.SensorKey
                     : dto.SensorKey.Trim(),
-                SoilMoistureThresholdEnabled = dto.SoilMoistureThresholdEnabled,
-                SoilMoistureThreshold = dto.SoilMoistureThreshold,
                 AirTempThresholdEnabled = dto.AirTempThresholdEnabled,
                 AirTempMin = dto.AirTempMin,
                 AirTempMax = dto.AirTempMax,
@@ -843,8 +841,6 @@ namespace IoTAgriculture.Services
                 EndHour = config.EndHour ?? runtime.EndHour,
                 SmartEnabled = config.SmartEnabled,
                 SensorKey = config.SensorKey,
-                SoilMoistureThresholdEnabled = config.SoilMoistureThresholdEnabled,
-                SoilMoistureThreshold = config.SoilMoistureThreshold,
                 AirTempThresholdEnabled = config.AirTempThresholdEnabled,
                 AirTempMin = config.AirTempMin,
                 AirTempMax = config.AirTempMax,
@@ -904,8 +900,7 @@ namespace IoTAgriculture.Services
             {
                 var fallback = devices.FirstOrDefault(x =>
                     x.Value?.Temperature.HasValue == true ||
-                    x.Value?.Humidity.HasValue == true ||
-                    x.Value?.GroundHumidity.HasValue == true);
+                    x.Value?.Humidity.HasValue == true);
                 sensorKey = fallback.Key;
                 sensor = fallback.Value;
             }
@@ -925,10 +920,6 @@ namespace IoTAgriculture.Services
                         : $"Không tìm thấy dữ liệu cảm biến {sensorKey}.");
             }
 
-            var soilViolation = schedule.SoilMoistureThresholdEnabled &&
-                sensor.GroundHumidity.HasValue &&
-                schedule.SoilMoistureThreshold.HasValue &&
-                sensor.GroundHumidity.Value < schedule.SoilMoistureThreshold.Value;
             var temperatureViolation = schedule.AirTempThresholdEnabled &&
                 sensor.Temperature.HasValue &&
                 schedule.AirTempMax.HasValue &&
@@ -938,7 +929,6 @@ namespace IoTAgriculture.Services
                 schedule.AirHumidityThreshold.HasValue &&
                 sensor.Humidity.Value < schedule.AirHumidityThreshold.Value;
             var hasRequiredReading =
-                (!schedule.SoilMoistureThresholdEnabled || sensor.GroundHumidity.HasValue) &&
                 (!schedule.AirTempThresholdEnabled || sensor.Temperature.HasValue) &&
                 (!schedule.AirHumidityThresholdEnabled || sensor.Humidity.HasValue);
 
@@ -953,13 +943,7 @@ namespace IoTAgriculture.Services
                 reasons.Add(
                     $"Độ ẩm không khí {sensor.Humidity!.Value:0.##}% < {schedule.AirHumidityThreshold!.Value}%");
             }
-            if (soilViolation)
-            {
-                reasons.Add(
-                    $"Độ ẩm đất {sensor.GroundHumidity!.Value:0.##}% < {schedule.SoilMoistureThreshold!.Value}%");
-            }
-
-            var violated = soilViolation || temperatureViolation || humidityViolation;
+            var violated = temperatureViolation || humidityViolation;
             var reason = violated
                 ? string.Join("; ", reasons)
                 : hasRequiredReading
@@ -1153,10 +1137,6 @@ namespace IoTAgriculture.Services
             {
                 throw new ArgumentException("EndTime must be later than StartTime.");
             }
-            if (dto.SoilMoistureThresholdEnabled && !dto.SoilMoistureThreshold.HasValue)
-            {
-                throw new ArgumentException("SoilMoistureThreshold is required when enabled.");
-            }
             if (dto.AirTempThresholdEnabled && !dto.AirTempMax.HasValue)
             {
                 throw new ArgumentException("AirTempMax is required when enabled.");
@@ -1171,7 +1151,6 @@ namespace IoTAgriculture.Services
                 throw new ArgumentException("AirHumidityThreshold is required when enabled.");
             }
             if (dto.SmartEnabled &&
-                !dto.SoilMoistureThresholdEnabled &&
                 !dto.AirTempThresholdEnabled &&
                 !dto.AirHumidityThresholdEnabled)
             {

@@ -129,14 +129,6 @@ namespace IoTAgriculture.Controllers
                     ?? ReadDouble(json.Value, "topTemperature")
                     ?? ReadDouble(json.Value, "upper_temperature")
                     ?? ReadDouble(json.Value, "upperTemperature"),
-                GroundHumidity = ReadDouble(json.Value, "ground_humidity")
-                    ?? ReadDouble(json.Value, "groundHumidity")
-                    ?? ReadDouble(json.Value, "lower_humidity")
-                    ?? ReadDouble(json.Value, "lowerHumidity"),
-                TopHumidity = ReadDouble(json.Value, "top_humidity")
-                    ?? ReadDouble(json.Value, "topHumidity")
-                    ?? ReadDouble(json.Value, "upper_humidity")
-                    ?? ReadDouble(json.Value, "upperHumidity"),
                 Timestamp = ReadString(json.Value, "timestamp"),
                 DeviceName = ReadString(json.Value, "device_name")
                     ?? ReadString(json.Value, "deviceName")
@@ -178,15 +170,7 @@ namespace IoTAgriculture.Controllers
                         top_temperature = ReadDouble(x.Value, "top_temperature")
                             ?? ReadDouble(x.Value, "topTemperature")
                             ?? ReadDouble(x.Value, "upper_temperature")
-                            ?? ReadDouble(x.Value, "upperTemperature"),
-                        ground_humidity = ReadDouble(x.Value, "ground_humidity")
-                            ?? ReadDouble(x.Value, "groundHumidity")
-                            ?? ReadDouble(x.Value, "lower_humidity")
-                            ?? ReadDouble(x.Value, "lowerHumidity"),
-                        top_humidity = ReadDouble(x.Value, "top_humidity")
-                            ?? ReadDouble(x.Value, "topHumidity")
-                            ?? ReadDouble(x.Value, "upper_humidity")
-                            ?? ReadDouble(x.Value, "upperHumidity")
+                            ?? ReadDouble(x.Value, "upperTemperature")
                     };
                 })
                 .Where(x =>
@@ -253,11 +237,7 @@ namespace IoTAgriculture.Controllers
                 ReadDouble(json, "airQuality") != null ||
                 ReadDouble(json, "air_quanlity") != null ||
                 ReadString(json, "air_status") != null ||
-                ReadString(json, "airStatus") != null ||
-                ReadDouble(json, "ground_humidity") != null ||
-                ReadDouble(json, "groundHumidity") != null ||
-                ReadDouble(json, "top_humidity") != null ||
-                ReadDouble(json, "topHumidity") != null;
+                ReadString(json, "airStatus") != null;
         }
 
         private static object Metric(double? value, string status, string level)

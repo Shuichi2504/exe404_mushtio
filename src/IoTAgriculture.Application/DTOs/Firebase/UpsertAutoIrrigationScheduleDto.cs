@@ -22,11 +22,6 @@ namespace IoTAgriculture.DTOs.Firebase
 
         public string? SensorKey { get; set; }
 
-        public bool SoilMoistureThresholdEnabled { get; set; }
-
-        [Range(0, 100)]
-        public int? SoilMoistureThreshold { get; set; }
-
         public bool AirTempThresholdEnabled { get; set; }
 
         [Range(-20, 100)]
