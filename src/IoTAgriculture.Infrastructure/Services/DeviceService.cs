@@ -151,7 +151,12 @@ namespace IoTAgriculture.Services
                 AirTempMin = dto.AirTempMin,
                 AirTempMax = dto.AirTempMax,
                 AirHumidityThresholdEnabled = dto.AirHumidityThresholdEnabled,
-                AirHumidityThreshold = dto.AirHumidityThreshold,
+                AirHumidityThreshold =
+                    dto.AirHumidityOnThreshold ?? dto.AirHumidityThreshold,
+                AirHumidityOnThreshold =
+                    dto.AirHumidityOnThreshold ?? dto.AirHumidityThreshold,
+                AirHumidityOffThreshold =
+                    dto.AirHumidityOffThreshold ?? dto.AirHumidityThreshold,
                 CooldownMinutes = dto.CooldownMinutes,
                 LastRunAt = existing?.LastRunAt,
                 LastRunLocal = existing?.LastRunLocal,
@@ -166,6 +171,10 @@ namespace IoTAgriculture.Services
                 LastTriggeredLocal = existing?.LastTriggeredLocal,
                 LastWaterTime = existing?.LastWaterTime ?? 0,
                 ThresholdConditionActive = existing?.ThresholdConditionActive ?? false,
+                TemperatureThresholdActive =
+                    existing?.TemperatureThresholdActive ?? false,
+                HumidityThresholdActive =
+                    existing?.HumidityThresholdActive ?? false,
                 ThresholdStatus = existing?.ThresholdStatus ?? "not-checked",
                 ThresholdReason = existing?.ThresholdReason,
                 AutomationLastCheckedAt = existing?.AutomationLastCheckedAt,
@@ -246,6 +255,240 @@ namespace IoTAgriculture.Services
             }
         }
 
+        public async Task ProcessThresholdAutomationAsync(
+            CancellationToken cancellationToken = default)
+        {
+            var devices = await _firebase.GetAsync<
+                    Dictionary<string, AutomationDeviceStateDto>>(
+                    "devices",
+                    cancellationToken)
+                ?? new Dictionary<string, AutomationDeviceStateDto>();
+            var legacySchedules = await _firebase.GetAsync<
+                    Dictionary<string, Dictionary<string, AutoIrrigationScheduleDto>>>(
+                    "pumpSchedules",
+                    cancellationToken)
+                ?? new Dictionary<string, Dictionary<string, AutoIrrigationScheduleDto>>();
+
+            foreach (var deviceEntry in devices)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    legacySchedules.TryGetValue(deviceEntry.Key, out var relaySchedules);
+                    AutoIrrigationScheduleDto? legacy = null;
+                    relaySchedules?.TryGetValue("relay2", out legacy);
+                    var schedule = MergeAndNormalizeSchedule(
+                        deviceEntry.Key,
+                        "relay2",
+                        deviceEntry.Value?.Schedule,
+                        legacy);
+                    if (schedule == null ||
+                        (!schedule.SmartEnabled &&
+                            NormalizeSource(schedule.ActiveSource) != ThresholdSource &&
+                            !schedule.ThresholdConditionActive))
+                    {
+                        continue;
+                    }
+
+                    await ProcessDeviceThresholdAutomationAsync(
+                        deviceEntry.Key,
+                        deviceEntry.Value,
+                        devices,
+                        schedule,
+                        cancellationToken);
+                }
+                catch (OperationCanceledException) when (
+                    cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Smart threshold polling failed for device {PumpKey}; continuing other devices.",
+                        deviceEntry.Key);
+                }
+            }
+        }
+
+        private async Task ProcessDeviceThresholdAutomationAsync(
+            string pumpKey,
+            AutomationDeviceStateDto? pump,
+            IReadOnlyDictionary<string, AutomationDeviceStateDto> devices,
+            AutoIrrigationScheduleDto schedule,
+            CancellationToken cancellationToken)
+        {
+            var deviceLock = DeviceLocks.GetOrAdd(
+                pumpKey,
+                _ => new SemaphoreSlim(1, 1));
+            await deviceLock.WaitAsync(cancellationToken);
+            try
+            {
+                var nowUtc = DateTimeOffset.UtcNow;
+                var nowLocal = TimeZoneInfo.ConvertTime(
+                    nowUtc,
+                    VietnamTimeZone).DateTime;
+                var activeSource = NormalizeSource(schedule.ActiveSource);
+                var manualOverrideUntil = ParseUtcDateTimeOffset(
+                    schedule.ManualOverrideUntilAt);
+                var threshold = EvaluateThreshold(schedule, devices);
+                var diagnosticsChanged = UpdateAutomationDiagnostics(
+                    schedule,
+                    threshold,
+                    cooldownComplete: true,
+                    nowUtc,
+                    nowLocal,
+                    activeSource);
+
+                _logger.LogInformation(
+                    "[ThresholdPoll] pump={PumpKey}; enabled={Enabled}; sensor={SensorKey}; temperature={Temperature}; tempMax={TempMax}; temperatureActive={TemperatureActive}; humidity={Humidity}; humidityOn={HumidityOn}; humidityOff={HumidityOff}; humidityActive={HumidityActive}; irrigationRequested={IrrigationRequested}; reason={Reason}.",
+                    pumpKey,
+                    schedule.SmartEnabled,
+                    threshold.SensorKey ?? "(none)",
+                    threshold.Temperature,
+                    threshold.TemperatureThreshold,
+                    threshold.TemperatureActive,
+                    threshold.Humidity,
+                    threshold.HumidityOnThreshold,
+                    threshold.HumidityOffThreshold,
+                    threshold.HumidityActive,
+                    threshold.IsViolated,
+                    threshold.Reason);
+                await WriteEngineHeartbeatAsync(
+                    pumpKey,
+                    schedule,
+                    threshold,
+                    cooldownComplete: true,
+                    pump?.Relay2 == true,
+                    nowUtc,
+                    nowLocal,
+                    cancellationToken);
+
+                if (manualOverrideUntil.HasValue &&
+                    manualOverrideUntil.Value > nowUtc)
+                {
+                    if (diagnosticsChanged)
+                    {
+                        schedule.ThresholdStatus = "manual-override";
+                        await SaveAutomationStateAsync(schedule, cancellationToken);
+                    }
+                    return;
+                }
+
+                if (!schedule.SmartEnabled)
+                {
+                    schedule.TemperatureThresholdActive = false;
+                    schedule.HumidityThresholdActive = false;
+                    schedule.ThresholdConditionActive = false;
+                    schedule.ThresholdStatus = "disabled";
+                    if (activeSource == ThresholdSource)
+                    {
+                        const string disabledReason =
+                            "Chế độ ngưỡng tưới đã tắt.";
+                        await SetRelayIfChangedCoreAsync(
+                            pumpKey,
+                            "relay2",
+                            false,
+                            ThresholdSource,
+                            null,
+                            ActorForSource(ThresholdSource),
+                            cancellationToken,
+                            disabledReason,
+                            threshold);
+                        schedule.ActiveSource = null;
+                        schedule.ActiveUntilAt = null;
+                        schedule.ActiveUntilLocal = null;
+                        schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
+                    }
+                    await SaveAutomationStateAsync(schedule, cancellationToken);
+                    return;
+                }
+
+                if (threshold.IsViolated)
+                {
+                    var changed = await SetRelayIfChangedCoreAsync(
+                        pumpKey,
+                        "relay2",
+                        true,
+                        ThresholdSource,
+                        null,
+                        ActorForSource(ThresholdSource),
+                        cancellationToken,
+                        threshold.Reason,
+                        threshold);
+                    schedule.ActiveSource = ThresholdSource;
+                    schedule.ActiveUntilAt = null;
+                    schedule.ActiveUntilLocal = null;
+                    schedule.ThresholdStatus = "watering";
+                    if (changed || activeSource != ThresholdSource)
+                    {
+                        schedule.LastSmartRunAt = nowUtc.ToString("O");
+                        schedule.LastSmartRunLocal =
+                            nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                        _logger.LogInformation(
+                            "[ThresholdAction] pump={PumpKey}; relay2=ON; reason={Reason}; temperature={Temperature}; humidity={Humidity}.",
+                            pumpKey,
+                            threshold.Reason,
+                            threshold.Temperature,
+                            threshold.Humidity);
+                    }
+                    await SaveAutomationStateAsync(schedule, cancellationToken);
+                    return;
+                }
+
+                if (!threshold.HasRequiredReading)
+                {
+                    // Never infer that an active condition has cleared from a
+                    // missing reading. A known violation can still start the
+                    // pump through the OR rule above, but stopping requires all
+                    // enabled conditions to have real, safe readings.
+                    if (diagnosticsChanged)
+                    {
+                        await SaveAutomationStateAsync(schedule, cancellationToken);
+                    }
+                    return;
+                }
+
+                if (activeSource == ThresholdSource)
+                {
+                    var reason = BuildThresholdClearReason(threshold);
+                    await SetRelayIfChangedCoreAsync(
+                        pumpKey,
+                        "relay2",
+                        false,
+                        ThresholdSource,
+                        null,
+                        ActorForSource(ThresholdSource),
+                        cancellationToken,
+                        reason,
+                        threshold);
+                    _logger.LogInformation(
+                        "[ThresholdAction] pump={PumpKey}; relay2=OFF; reason={Reason}; temperature={Temperature}; humidity={Humidity}.",
+                        pumpKey,
+                        reason,
+                        threshold.Temperature,
+                        threshold.Humidity);
+                    schedule.ActiveSource = null;
+                    schedule.ActiveUntilAt = null;
+                    schedule.ActiveUntilLocal = null;
+                    schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
+                    schedule.LastTriggeredAt = nowUtc.ToString("O");
+                    schedule.LastTriggeredLocal =
+                        nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                }
+
+                if (diagnosticsChanged || activeSource == ThresholdSource)
+                {
+                    await SaveAutomationStateAsync(schedule, cancellationToken);
+                }
+            }
+            finally
+            {
+                deviceLock.Release();
+            }
+        }
+
         private async Task ProcessDeviceAutomationAsync(
             string pumpKey,
             AutomationDeviceStateDto? pump,
@@ -278,7 +521,7 @@ namespace IoTAgriculture.Services
                     nowLocal,
                     activeSource);
                 _logger.LogInformation(
-                    "[EngineConfig] pump={PumpKey}; relay=relay2; scheduleEnabled={ScheduleEnabled}; intervalMinutes={IntervalMinutes}; durationSeconds={DurationSeconds}; window={StartTime}-{EndTime}; thresholdEnabled={ThresholdEnabled}; sensor={SensorKey}; tempCheckEnabled={TempCheckEnabled}; tempMax={TempMax}; humidityCheckEnabled={HumidityCheckEnabled}; humidityMin={HumidityMin}; cooldownMinutes={CooldownMinutes}.",
+                    "[EngineConfig] pump={PumpKey}; relay=relay2; scheduleEnabled={ScheduleEnabled}; intervalMinutes={IntervalMinutes}; durationSeconds={DurationSeconds}; window={StartTime}-{EndTime}; thresholdEnabled={ThresholdEnabled}; sensor={SensorKey}; tempCheckEnabled={TempCheckEnabled}; tempMax={TempMax}; humidityCheckEnabled={HumidityCheckEnabled}; humidityOn={HumidityOn}; humidityOff={HumidityOff}; cooldownMinutes={CooldownMinutes}.",
                     pumpKey,
                     schedule.Enabled,
                     schedule.IntervalMinutes,
@@ -290,7 +533,10 @@ namespace IoTAgriculture.Services
                     schedule.AirTempThresholdEnabled,
                     schedule.AirTempMax,
                     schedule.AirHumidityThresholdEnabled,
-                    schedule.AirHumidityThreshold,
+                    schedule.AirHumidityOnThreshold ??
+                        schedule.AirHumidityThreshold,
+                    schedule.AirHumidityOffThreshold ??
+                        schedule.AirHumidityThreshold,
                     schedule.CooldownMinutes);
                 _logger.LogInformation(
                     "[EngineSensor] pump={PumpKey}; sensor={SensorKey}; temperature={Temperature}; humidity={Humidity}; readingComplete={ReadingComplete}; thresholdViolated={ThresholdViolated}; reason={ThresholdReason}.",
@@ -350,88 +596,20 @@ namespace IoTAgriculture.Services
                     diagnosticsChanged = true;
                 }
 
-                if (activeSource == ThresholdSource)
+                // The threshold poller exclusively owns threshold decisions.
+                // While a real threshold condition is active, the fixed
+                // schedule must not start a timed run or stop an existing one.
+                if (activeSource == ThresholdSource ||
+                    (schedule.SmartEnabled && threshold.IsViolated))
                 {
-                    // Threshold watering has no fixed end time. A legacy run may
-                    // still carry ActiveUntil from an older engine version, so
-                    // clear it and decide solely from the latest sensor reading.
-                    if (schedule.ActiveUntilAt != null ||
-                        schedule.ActiveUntilLocal != null)
+                    _logger.LogInformation(
+                        "[EngineDecision] pump={PumpKey}; action=none; reason=threshold-poller-has-priority.",
+                        pumpKey);
+                    if (diagnosticsChanged)
                     {
-                        schedule.ActiveUntilAt = null;
-                        schedule.ActiveUntilLocal = null;
-                        activeUntil = null;
-                        diagnosticsChanged = true;
-                    }
-
-                    // A due schedule upgrades an in-progress threshold run without
-                    // toggling relay2. Schedule watering keeps its configured
-                    // duration and remains otherwise unchanged.
-                    if (scheduleDue)
-                    {
-                        activeSource = ScheduleSource;
-                        schedule.ActiveSource = ScheduleSource;
-                        var scheduleStop = nowLocal.AddSeconds(
-                            EffectiveDurationSeconds(schedule));
-                        activeUntil = scheduleStop;
-                        schedule.ActiveUntilAt =
-                            ToUtcOffset(scheduleStop).ToString("O");
-                        schedule.ActiveUntilLocal =
-                            scheduleStop.ToString("yyyy-MM-dd HH:mm:ss");
-                        schedule.LastRunAt = nowUtc.ToString("O");
-                        schedule.LastRunLocal =
-                            nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
-                        diagnosticsChanged = true;
-                    }
-                    else if (!schedule.SmartEnabled ||
-                        (threshold.HasRequiredReading && !threshold.IsViolated))
-                    {
-                        var reason = schedule.SmartEnabled
-                            ? BuildThresholdClearReason(threshold)
-                            : "Chế độ ngưỡng tưới đã tắt.";
-                        _logger.LogInformation(
-                            "[EngineDecision] pump={PumpKey}; action=relay2-off; source=threshold; reason={Reason}",
-                            pumpKey,
-                            reason);
-                        await SetRelayIfChangedCoreAsync(
-                            pumpKey,
-                            "relay2",
-                            false,
-                            ThresholdSource,
-                            null,
-                            ActorForSource(ThresholdSource),
-                            cancellationToken,
-                            reason,
-                            threshold);
-                        schedule.ActiveSource = null;
-                        schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
-                        schedule.LastTriggeredAt = nowUtc.ToString("O");
-                        schedule.LastTriggeredLocal =
-                            nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
-                        UpdateAutomationDiagnostics(
-                            schedule,
-                            threshold,
-                            IsCooldownComplete(schedule, nowUtc),
-                            nowUtc,
-                            nowLocal,
-                            activeSource: null);
                         await SaveAutomationStateAsync(schedule, cancellationToken);
-                        return;
                     }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[EngineDecision] pump={PumpKey}; action=keep-relay2-on; source=threshold; reason={Reason}.",
-                            pumpKey,
-                            threshold.HasRequiredReading
-                                ? "threshold-still-violated"
-                                : "sensor-reading-incomplete");
-                        if (diagnosticsChanged)
-                        {
-                            await SaveAutomationStateAsync(schedule, cancellationToken);
-                        }
-                        return;
-                    }
+                    return;
                 }
 
                 if (activeUntil.HasValue)
@@ -508,12 +686,6 @@ namespace IoTAgriculture.Services
                 if (scheduleDue)
                 {
                     triggerSource = ScheduleSource;
-                }
-                else if (schedule.SmartEnabled &&
-                    threshold.IsViolated &&
-                    cooldownComplete)
-                {
-                    triggerSource = ThresholdSource;
                 }
 
                 if (triggerSource == null)
@@ -621,7 +793,7 @@ namespace IoTAgriculture.Services
                 Temperature = threshold?.Temperature,
                 Humidity = threshold?.Humidity,
                 TemperatureThreshold = threshold?.TemperatureThreshold,
-                HumidityThreshold = threshold?.HumidityThreshold,
+                HumidityThreshold = threshold?.HumidityOnThreshold,
                 Timestamp = nowUtc.ToUnixTimeMilliseconds(),
                 UtcTime = nowUtc.ToString("O"),
                 LocalTime = nowLocal.ToString("yyyy-MM-dd HH:mm:ss")
@@ -793,7 +965,7 @@ namespace IoTAgriculture.Services
                 },
                 cancellationToken);
             _logger.LogInformation(
-                "[EngineCheck] tick={TickAt}; pump={PumpKey}; sensor={SensorKey}; relay2={Relay2}; temp={Temperature}; tempMax={TemperatureMax}; humidity={Humidity}; humidityMin={HumidityMin}; violated={Violated}; cooldownComplete={CooldownComplete}; scheduleEnabled={ScheduleEnabled}; thresholdEnabled={ThresholdEnabled}",
+                "[EngineCheck] tick={TickAt}; pump={PumpKey}; sensor={SensorKey}; relay2={Relay2}; temp={Temperature}; tempMax={TemperatureMax}; humidity={Humidity}; humidityOn={HumidityOn}; humidityOff={HumidityOff}; violated={Violated}; cooldownComplete={CooldownComplete}; scheduleEnabled={ScheduleEnabled}; thresholdEnabled={ThresholdEnabled}",
                 nowUtc,
                 pumpKey,
                 threshold.SensorKey ?? "(none)",
@@ -801,7 +973,8 @@ namespace IoTAgriculture.Services
                 threshold.Temperature,
                 threshold.TemperatureThreshold,
                 threshold.Humidity,
-                threshold.HumidityThreshold,
+                threshold.HumidityOnThreshold,
+                threshold.HumidityOffThreshold,
                 threshold.IsViolated,
                 cooldownComplete,
                 schedule.Enabled,
@@ -846,6 +1019,12 @@ namespace IoTAgriculture.Services
                 AirTempMax = config.AirTempMax,
                 AirHumidityThresholdEnabled = config.AirHumidityThresholdEnabled,
                 AirHumidityThreshold = config.AirHumidityThreshold,
+                AirHumidityOnThreshold =
+                    config.AirHumidityOnThreshold ??
+                    config.AirHumidityThreshold,
+                AirHumidityOffThreshold =
+                    config.AirHumidityOffThreshold ??
+                    config.AirHumidityThreshold,
                 CooldownMinutes = Math.Max(1, config.CooldownMinutes),
                 LastRunAt = runtime.LastRunAt ?? config.LastRunAt,
                 LastRunLocal = runtime.LastRunLocal ?? config.LastRunLocal,
@@ -867,6 +1046,9 @@ namespace IoTAgriculture.Services
                 LastTriggeredLocal = runtime.LastTriggeredLocal ?? config.LastTriggeredLocal,
                 LastWaterTime = Math.Max(runtime.LastWaterTime, config.LastWaterTime),
                 ThresholdConditionActive = runtime.ThresholdConditionActive,
+                TemperatureThresholdActive =
+                    runtime.TemperatureThresholdActive,
+                HumidityThresholdActive = runtime.HumidityThresholdActive,
                 ThresholdStatus = runtime.ThresholdStatus,
                 ThresholdReason = runtime.ThresholdReason,
                 AutomationLastCheckedAt = runtime.AutomationLastCheckedAt,
@@ -909,41 +1091,68 @@ namespace IoTAgriculture.Services
             {
                 return new ThresholdEvaluation(
                     false,
-                    false,
+                    schedule.TemperatureThresholdActive ||
+                        schedule.HumidityThresholdActive,
+                    schedule.TemperatureThresholdActive,
+                    schedule.HumidityThresholdActive,
                     sensorKey,
                     null,
                     null,
-                    schedule.AirTempMax,
-                    schedule.AirHumidityThreshold,
+                    schedule.AirTempThresholdEnabled
+                        ? schedule.AirTempMax
+                        : null,
+                    schedule.AirHumidityThresholdEnabled
+                        ? schedule.AirHumidityOnThreshold ??
+                            schedule.AirHumidityThreshold
+                        : null,
+                    schedule.AirHumidityThresholdEnabled
+                        ? schedule.AirHumidityOffThreshold ??
+                            schedule.AirHumidityThreshold
+                        : null,
                     string.IsNullOrWhiteSpace(sensorKey)
                         ? "Chưa cấu hình cảm biến cho ngưỡng tưới."
                         : $"Không tìm thấy dữ liệu cảm biến {sensorKey}.");
             }
 
-            var temperatureViolation = schedule.AirTempThresholdEnabled &&
-                sensor.Temperature.HasValue &&
-                schedule.AirTempMax.HasValue &&
-                (decimal)sensor.Temperature.Value > schedule.AirTempMax.Value;
-            var humidityViolation = schedule.AirHumidityThresholdEnabled &&
-                sensor.Humidity.HasValue &&
-                schedule.AirHumidityThreshold.HasValue &&
-                sensor.Humidity.Value < schedule.AirHumidityThreshold.Value;
             var hasRequiredReading =
                 (!schedule.AirTempThresholdEnabled || sensor.Temperature.HasValue) &&
                 (!schedule.AirHumidityThresholdEnabled || sensor.Humidity.HasValue);
+            var humidityOnThreshold =
+                schedule.AirHumidityOnThreshold ??
+                schedule.AirHumidityThreshold;
+            var humidityOffThreshold =
+                schedule.AirHumidityOffThreshold ??
+                schedule.AirHumidityThreshold;
+            var temperatureActive = schedule.AirTempThresholdEnabled &&
+                (sensor.Temperature.HasValue
+                    ? schedule.AirTempMax.HasValue &&
+                        (decimal)sensor.Temperature.Value >
+                            schedule.AirTempMax.Value
+                    : schedule.TemperatureThresholdActive);
+            var humidityActive = schedule.AirHumidityThresholdEnabled &&
+                (sensor.Humidity.HasValue
+                    ? schedule.HumidityThresholdActive
+                        ? humidityOffThreshold.HasValue &&
+                            sensor.Humidity.Value < humidityOffThreshold.Value
+                        : humidityOnThreshold.HasValue &&
+                            sensor.Humidity.Value < humidityOnThreshold.Value
+                    : schedule.HumidityThresholdActive);
 
             var reasons = new List<string>();
-            if (temperatureViolation)
+            if (temperatureActive)
             {
                 reasons.Add(
                     $"Nhiệt độ {sensor.Temperature!.Value:0.##}°C > {schedule.AirTempMax!.Value:0.##}°C");
             }
-            if (humidityViolation)
+            if (humidityActive)
             {
+                var comparisonThreshold = schedule.HumidityThresholdActive
+                    ? humidityOffThreshold
+                    : humidityOnThreshold;
                 reasons.Add(
-                    $"Độ ẩm không khí {sensor.Humidity!.Value:0.##}% < {schedule.AirHumidityThreshold!.Value}%");
+                    $"Độ ẩm không khí {sensor.Humidity!.Value:0.##}% < {comparisonThreshold!.Value}%");
             }
-            var violated = temperatureViolation || humidityViolation;
+            var violated = temperatureActive || humidityActive;
             var reason = violated
                 ? string.Join("; ", reasons)
                 : hasRequiredReading
@@ -952,11 +1161,20 @@ namespace IoTAgriculture.Services
             return new ThresholdEvaluation(
                 hasRequiredReading,
                 violated,
+                temperatureActive,
+                humidityActive,
                 sensorKey,
                 sensor.Temperature,
                 sensor.Humidity,
-                schedule.AirTempMax,
-                schedule.AirHumidityThreshold,
+                schedule.AirTempThresholdEnabled
+                    ? schedule.AirTempMax
+                    : null,
+                schedule.AirHumidityThresholdEnabled
+                    ? humidityOnThreshold
+                    : null,
+                schedule.AirHumidityThresholdEnabled
+                    ? humidityOffThreshold
+                    : null,
                 reason);
         }
 
@@ -989,6 +1207,9 @@ namespace IoTAgriculture.Services
                 stale;
 
             schedule.ThresholdConditionActive = threshold.IsViolated;
+            schedule.TemperatureThresholdActive =
+                threshold.TemperatureActive;
+            schedule.HumidityThresholdActive = threshold.HumidityActive;
             schedule.ThresholdStatus = status;
             schedule.ThresholdReason = threshold.Reason;
             if (changed)
@@ -1015,10 +1236,10 @@ namespace IoTAgriculture.Services
                     $"Nhiệt độ {threshold.Temperature.Value:0.##}°C ≤ {threshold.TemperatureThreshold.Value:0.##}°C");
             }
             if (threshold.Humidity.HasValue &&
-                threshold.HumidityThreshold.HasValue)
+                threshold.HumidityOffThreshold.HasValue)
             {
                 readings.Add(
-                    $"Độ ẩm {threshold.Humidity.Value:0.##}% ≥ {threshold.HumidityThreshold.Value}%");
+                    $"Độ ẩm {threshold.Humidity.Value:0.##}% ≥ {threshold.HumidityOffThreshold.Value}%");
             }
 
             return readings.Count == 0
@@ -1146,9 +1367,23 @@ namespace IoTAgriculture.Services
             {
                 throw new ArgumentException("AirTempMax must be greater than AirTempMin.");
             }
-            if (dto.AirHumidityThresholdEnabled && !dto.AirHumidityThreshold.HasValue)
+            var humidityOn =
+                dto.AirHumidityOnThreshold ?? dto.AirHumidityThreshold;
+            var humidityOff =
+                dto.AirHumidityOffThreshold ?? dto.AirHumidityThreshold;
+            if (dto.AirHumidityThresholdEnabled &&
+                (!humidityOn.HasValue || !humidityOff.HasValue))
             {
-                throw new ArgumentException("AirHumidityThreshold is required when enabled.");
+                throw new ArgumentException(
+                    "AirHumidityOnThreshold and AirHumidityOffThreshold are required when enabled.");
+            }
+            if (dto.AirHumidityThresholdEnabled &&
+                (dto.AirHumidityOnThreshold.HasValue ||
+                    dto.AirHumidityOffThreshold.HasValue) &&
+                humidityOn!.Value >= humidityOff!.Value)
+            {
+                throw new ArgumentException(
+                    "AirHumidityOffThreshold must be greater than AirHumidityOnThreshold.");
             }
             if (dto.SmartEnabled &&
                 !dto.AirTempThresholdEnabled &&
@@ -1257,11 +1492,14 @@ namespace IoTAgriculture.Services
         private sealed record ThresholdEvaluation(
             bool HasRequiredReading,
             bool IsViolated,
+            bool TemperatureActive,
+            bool HumidityActive,
             string? SensorKey,
             double? Temperature,
             double? Humidity,
             decimal? TemperatureThreshold,
-            int? HumidityThreshold,
+            int? HumidityOnThreshold,
+            int? HumidityOffThreshold,
             string Reason);
 
         private static TimeZoneInfo ResolveVietnamTimeZone()

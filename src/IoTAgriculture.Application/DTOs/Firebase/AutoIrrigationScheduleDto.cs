@@ -58,6 +58,18 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("airHumidityThreshold")]
         public int? AirHumidityThreshold { get; set; }
 
+        [JsonPropertyName("airHumidityOnThreshold")]
+        public int? AirHumidityOnThreshold { get; set; }
+
+        [JsonPropertyName("airHumidityOffThreshold")]
+        public int? AirHumidityOffThreshold { get; set; }
+
+        [JsonPropertyName("temperatureThresholdActive")]
+        public bool TemperatureThresholdActive { get; set; }
+
+        [JsonPropertyName("humidityThresholdActive")]
+        public bool HumidityThresholdActive { get; set; }
+
         [JsonPropertyName("cooldownMinutes")]
         public int CooldownMinutes { get; set; } = 30;
 

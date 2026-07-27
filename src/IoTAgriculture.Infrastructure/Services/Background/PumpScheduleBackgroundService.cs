@@ -8,6 +8,7 @@ namespace IoTAgriculture.Services
         private readonly AutomationEngineHealth _health;
         private readonly ILogger<PumpScheduleBackgroundService> _logger;
         private readonly TimeSpan _automationInterval;
+        private readonly TimeSpan _thresholdPollingInterval;
 
         public PumpScheduleBackgroundService(
             IServiceScopeFactory scopeFactory,
@@ -22,19 +23,41 @@ namespace IoTAgriculture.Services
                 configuration.GetValue("Automation:TickSeconds", 10),
                 1,
                 30));
+            _thresholdPollingInterval = TimeSpan.FromSeconds(Math.Clamp(
+                configuration.GetValue("Automation:ThresholdPollSeconds", 5),
+                1,
+                60));
         }
 
         protected override Task ExecuteAsync(CancellationToken stoppingToken)
         {
             _health.MarkStarted();
             _logger.LogInformation(
-                "Pump automation engine started. Automation interval: {AutomationIntervalSeconds} seconds; monitoring interval: 30 seconds.",
-                _automationInterval.TotalSeconds);
+                "Pump automation engine started. Fixed schedule interval: {AutomationIntervalSeconds} seconds; smart threshold polling interval: {ThresholdPollingIntervalSeconds} seconds; monitoring interval: 30 seconds.",
+                _automationInterval.TotalSeconds,
+                _thresholdPollingInterval.TotalSeconds);
             // Automation is intentionally isolated from slower history/alert work.
             // This keeps durationSeconds accurate without flooding sensor history.
             return Task.WhenAll(
                 RunAutomationLoopAsync(stoppingToken),
+                RunThresholdPollingLoopAsync(stoppingToken),
                 RunMonitoringLoopAsync(stoppingToken));
+        }
+
+        private async Task RunThresholdPollingLoopAsync(
+            CancellationToken stoppingToken)
+        {
+            using var timer = new PeriodicTimer(_thresholdPollingInterval);
+            do
+            {
+                await RunScopedStepAsync(
+                    "process smart irrigation thresholds",
+                    provider => provider
+                        .GetRequiredService<IDeviceService>()
+                        .ProcessThresholdAutomationAsync(stoppingToken),
+                    stoppingToken);
+            }
+            while (await WaitForNextTickAsync(timer, stoppingToken));
         }
 
         private async Task RunAutomationLoopAsync(CancellationToken stoppingToken)

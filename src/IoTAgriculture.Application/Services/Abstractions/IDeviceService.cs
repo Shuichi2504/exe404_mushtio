@@ -20,5 +20,7 @@ namespace IoTAgriculture.Services.Interfaces
             string relayKey,
             UpsertAutoIrrigationScheduleDto dto);
         Task ProcessAutomationAsync(CancellationToken cancellationToken = default);
+        Task ProcessThresholdAutomationAsync(
+            CancellationToken cancellationToken = default);
     }
 }

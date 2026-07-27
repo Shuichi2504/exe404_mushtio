@@ -35,6 +35,12 @@ namespace IoTAgriculture.DTOs.Firebase
         [Range(0, 100)]
         public int? AirHumidityThreshold { get; set; }
 
+        [Range(0, 100)]
+        public int? AirHumidityOnThreshold { get; set; }
+
+        [Range(0, 100)]
+        public int? AirHumidityOffThreshold { get; set; }
+
         [Range(1, 1440)]
         public int CooldownMinutes { get; set; } = 30;
     }
