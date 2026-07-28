@@ -333,10 +333,11 @@ namespace IoTAgriculture.Services
                 var manualOverrideUntil = ParseUtcDateTimeOffset(
                     schedule.ManualOverrideUntilAt);
                 var threshold = EvaluateThreshold(schedule, devices);
+                var cooldownComplete = IsCooldownComplete(schedule, nowUtc);
                 var diagnosticsChanged = UpdateAutomationDiagnostics(
                     schedule,
                     threshold,
-                    cooldownComplete: true,
+                    cooldownComplete,
                     nowUtc,
                     nowLocal,
                     activeSource);
@@ -359,7 +360,7 @@ namespace IoTAgriculture.Services
                     pumpKey,
                     schedule,
                     threshold,
-                    cooldownComplete: true,
+                    cooldownComplete,
                     pump?.Relay2 == true,
                     nowUtc,
                     nowLocal,
@@ -407,6 +408,19 @@ namespace IoTAgriculture.Services
 
                 if (threshold.IsViolated)
                 {
+                    if (!cooldownComplete && activeSource != ThresholdSource)
+                    {
+                        schedule.ActiveSource = null;
+                        schedule.ActiveUntilAt = null;
+                        schedule.ActiveUntilLocal = null;
+                        schedule.ThresholdStatus = "cooldown";
+                        await SaveAutomationStateAsync(schedule, cancellationToken);
+                        _logger.LogInformation(
+                            "[ThresholdAction] pump={PumpKey}; relay2=OFF; reason=mandatory-cooldown; condition remembered until cooldown expires.",
+                            pumpKey);
+                        return;
+                    }
+
                     var changed = await SetRelayIfChangedCoreAsync(
                         pumpKey,
                         "relay2",

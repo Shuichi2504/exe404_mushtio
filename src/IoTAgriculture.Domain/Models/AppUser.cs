@@ -36,5 +36,10 @@ namespace IoTAgriculture.Models
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
         public DateTime? DeactivatedAt { get; set; }
+
+        public DateTime? LastActiveAt { get; set; }
+
+        [Required, MaxLength(20)]
+        public string AccountType { get; set; } = "standard";
     }
 }

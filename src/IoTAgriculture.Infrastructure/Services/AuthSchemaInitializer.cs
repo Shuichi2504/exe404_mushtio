@@ -55,6 +55,21 @@ namespace IoTAgriculture.Services
                 """);
 
             await db.Database.ExecuteSqlRawAsync("""
+                IF COL_LENGTH(N'[Users]', N'LastActiveAt') IS NULL
+                BEGIN
+                    ALTER TABLE [Users] ADD [LastActiveAt] datetime2 NULL;
+                END
+                """);
+
+            await db.Database.ExecuteSqlRawAsync("""
+                IF COL_LENGTH(N'[Users]', N'AccountType') IS NULL
+                BEGIN
+                    ALTER TABLE [Users] ADD [AccountType] nvarchar(20) NOT NULL
+                        CONSTRAINT [DF_Users_AccountType] DEFAULT ('standard');
+                END
+                """);
+
+            await db.Database.ExecuteSqlRawAsync("""
                 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Users_Email' AND object_id = OBJECT_ID(N'[Users]'))
                 BEGIN
                     CREATE UNIQUE INDEX [IX_Users_Email] ON [Users] ([Email]) WHERE [Email] <> '';

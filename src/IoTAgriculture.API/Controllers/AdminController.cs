@@ -57,6 +57,8 @@ namespace IoTAgriculture.Controllers
                     PhoneNumber = u.PhoneNumber,
                     Address = u.Address,
                     Role = u.Role == 1 ? "admin" : "user",
+                    AccountType = u.AccountType,
+                    LastActiveAt = u.LastActiveAt,
                     DeactivatedAt = u.DeactivatedAt
                 })
                 .ToListAsync();

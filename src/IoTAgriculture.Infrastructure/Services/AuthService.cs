@@ -60,7 +60,9 @@ namespace IoTAgriculture.Services
                 PasswordHash = password.Hash,
                 PasswordSalt = password.Salt,
                 CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow
+                UpdatedAt = DateTime.UtcNow,
+                LastActiveAt = DateTime.UtcNow,
+                AccountType = "standard"
             };
 
             _db.Users.Add(user);
@@ -321,6 +323,7 @@ namespace IoTAgriculture.Services
 
         private async Task<AuthResponseDto> CreateSessionAsync(AppUser user)
         {
+            user.LastActiveAt = DateTime.UtcNow;
             var session = new UserSession
             {
                 SessionId = Guid.NewGuid(),
@@ -364,11 +367,19 @@ namespace IoTAgriculture.Services
                 return null;
             }
 
-            if (session.User?.DeactivatedAt != null)
+            if (session.User == null || session.User.DeactivatedAt != null)
             {
                 _db.UserSessions.Remove(session);
                 await _db.SaveChangesAsync();
                 return null;
+            }
+
+            if (!session.User.LastActiveAt.HasValue ||
+                DateTime.UtcNow - session.User.LastActiveAt.Value >=
+                TimeSpan.FromMinutes(1))
+            {
+                session.User.LastActiveAt = DateTime.UtcNow;
+                await _db.SaveChangesAsync();
             }
 
             return session;
