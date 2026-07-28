@@ -187,6 +187,28 @@ namespace IoTAgriculture.Services
                     ALTER TABLE [EmailVerificationCodes] ADD [VerifiedAt] datetime2 NULL;
                 END
                 """);
+
+            await db.Database.ExecuteSqlRawAsync("""
+                IF OBJECT_ID(N'[AiResponseReports]', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE [AiResponseReports] (
+                        [AiResponseReportId] uniqueidentifier NOT NULL CONSTRAINT [PK_AiResponseReports] PRIMARY KEY,
+                        [UserId] uniqueidentifier NOT NULL,
+                        [Reason] nvarchar(80) NOT NULL,
+                        [Note] nvarchar(1000) NULL,
+                        [Prompt] nvarchar(4000) NOT NULL,
+                        [Response] nvarchar(max) NOT NULL,
+                        [Status] nvarchar(32) NOT NULL,
+                        [CreatedAt] datetime2 NOT NULL,
+                        CONSTRAINT [FK_AiResponseReports_Users_UserId]
+                            FOREIGN KEY ([UserId]) REFERENCES [Users] ([UserId]) ON DELETE CASCADE
+                    );
+                    CREATE INDEX [IX_AiResponseReports_Status_CreatedAt]
+                        ON [AiResponseReports] ([Status], [CreatedAt]);
+                    CREATE INDEX [IX_AiResponseReports_UserId_CreatedAt]
+                        ON [AiResponseReports] ([UserId], [CreatedAt]);
+                END
+                """);
             await SeedAdminAsync(db);
         }
 

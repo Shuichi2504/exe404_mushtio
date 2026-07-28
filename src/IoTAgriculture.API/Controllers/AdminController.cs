@@ -66,6 +66,40 @@ namespace IoTAgriculture.Controllers
             return Ok(users);
         }
 
+        [HttpGet("ai-reports")]
+        public async Task<IActionResult> GetAiReports(
+            [FromQuery] int limit = 100,
+            CancellationToken cancellationToken = default)
+        {
+            if (!await IsAdminAsync())
+            {
+                return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            var safeLimit = Math.Clamp(limit, 1, 200);
+            var reports = await _db.AiResponseReports
+                .AsNoTracking()
+                .Include(x => x.User)
+                .OrderByDescending(x => x.CreatedAt)
+                .Take(safeLimit)
+                .Select(x => new
+                {
+                    reportId = x.AiResponseReportId,
+                    x.UserId,
+                    userName = x.User == null ? string.Empty : x.User.FullName,
+                    userEmail = x.User == null ? string.Empty : x.User.Email,
+                    x.Reason,
+                    x.Note,
+                    x.Prompt,
+                    x.Response,
+                    x.Status,
+                    x.CreatedAt
+                })
+                .ToListAsync(cancellationToken);
+
+            return Ok(reports);
+        }
+
         [HttpPost("users/{userId:guid}/deactivate")]
         public async Task<IActionResult> DeactivateUser(
             Guid userId,

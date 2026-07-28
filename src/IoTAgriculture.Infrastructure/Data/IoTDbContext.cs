@@ -18,6 +18,7 @@ namespace IoTAgriculture.Data
         public DbSet<FcmToken> FcmTokens => Set<FcmToken>();
         public DbSet<UserNotification> UserNotifications => Set<UserNotification>();
         public DbSet<EmailVerificationCode> EmailVerificationCodes => Set<EmailVerificationCode>();
+        public DbSet<AiResponseReport> AiResponseReports => Set<AiResponseReport>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -89,6 +90,18 @@ namespace IoTAgriculture.Data
                 .HasIndex(x => new { x.UserId, x.CreatedAt });
 
             modelBuilder.Entity<UserNotification>()
+                .HasOne(x => x.User)
+                .WithMany()
+                .HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<AiResponseReport>()
+                .HasIndex(x => new { x.Status, x.CreatedAt });
+
+            modelBuilder.Entity<AiResponseReport>()
+                .HasIndex(x => new { x.UserId, x.CreatedAt });
+
+            modelBuilder.Entity<AiResponseReport>()
                 .HasOne(x => x.User)
                 .WithMany()
                 .HasForeignKey(x => x.UserId)
