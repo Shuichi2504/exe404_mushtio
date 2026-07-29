@@ -9,5 +9,6 @@ namespace IoTAgriculture.DTOs.Auth
         public string Address { get; set; } = string.Empty;
         public DateTime DateOfBirth { get; set; }
         public string Role { get; set; } = "user";
+        public string AccountType { get; set; } = "standard";
     }
 }

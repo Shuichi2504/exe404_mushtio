@@ -62,7 +62,7 @@ namespace IoTAgriculture.Services
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,
                 LastActiveAt = DateTime.UtcNow,
-                AccountType = "standard"
+                AccountType = AccountTypes.Standard
             };
 
             _db.Users.Add(user);
@@ -395,7 +395,8 @@ namespace IoTAgriculture.Services
                 Email = user.Email,
                 Address = user.Address,
                 DateOfBirth = user.DateOfBirth,
-                Role = user.Role == AdminRole ? "admin" : "user"
+                Role = user.Role == AdminRole ? "admin" : "user",
+                AccountType = AccountTypes.Normalize(user.AccountType)
             };
         }
 

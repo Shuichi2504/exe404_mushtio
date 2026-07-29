@@ -48,22 +48,61 @@ namespace IoTAgriculture.Controllers
                 return StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            var users = await _db.Users
+            var users = await ProjectAdminUsers()
                 .OrderBy(u => u.FullName)
-                .Select(u => new AdminUserDto
-                {
-                    UserId = u.UserId,
-                    FullName = u.FullName,
-                    PhoneNumber = u.PhoneNumber,
-                    Address = u.Address,
-                    Role = u.Role == 1 ? "admin" : "user",
-                    AccountType = u.AccountType,
-                    LastActiveAt = u.LastActiveAt,
-                    DeactivatedAt = u.DeactivatedAt
-                })
                 .ToListAsync();
 
             return Ok(users);
+        }
+
+        [HttpGet("users/{userId:guid}")]
+        public async Task<IActionResult> GetUser(Guid userId)
+        {
+            if (!await IsAdminAsync())
+            {
+                return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            var user = await ProjectAdminUsers()
+                .FirstOrDefaultAsync(u => u.UserId == userId);
+            return user == null
+                ? NotFound(new { message = "Không tìm thấy tài khoản" })
+                : Ok(user);
+        }
+
+        [HttpPatch("users/{userId:guid}/account-type")]
+        public async Task<IActionResult> UpdateAccountType(
+            Guid userId,
+            [FromBody] UpdateAccountTypeRequestDto dto,
+            CancellationToken cancellationToken)
+        {
+            if (!await IsAdminAsync())
+            {
+                return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            var requestedType = dto.AccountType?.Trim();
+            if (!AccountTypes.IsValid(requestedType))
+            {
+                return BadRequest(new
+                {
+                    message = "Loại tài khoản chỉ được là 'standard' hoặc 'premium'"
+                });
+            }
+
+            var user = await _db.Users.FirstOrDefaultAsync(
+                u => u.UserId == userId,
+                cancellationToken);
+            if (user == null)
+            {
+                return NotFound(new { message = "Không tìm thấy tài khoản" });
+            }
+
+            user.AccountType = AccountTypes.Normalize(requestedType);
+            user.UpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(cancellationToken);
+
+            return Ok(ToAdminUserDto(user));
         }
 
         [HttpPost("users/{userId:guid}/deactivate")]
@@ -271,6 +310,38 @@ namespace IoTAgriculture.Controllers
                 .OrderBy(x => x.DeviceType)
                 .ThenBy(x => x.DeviceName)
                 .ToList();
+        }
+
+        private IQueryable<AdminUserDto> ProjectAdminUsers()
+        {
+            return _db.Users.Select(u => new AdminUserDto
+            {
+                UserId = u.UserId,
+                FullName = u.FullName,
+                PhoneNumber = u.PhoneNumber,
+                Address = u.Address,
+                Role = u.Role == 1 ? "admin" : "user",
+                AccountType = u.AccountType == AccountTypes.Premium
+                    ? AccountTypes.Premium
+                    : AccountTypes.Standard,
+                LastActiveAt = u.LastActiveAt,
+                DeactivatedAt = u.DeactivatedAt
+            });
+        }
+
+        private static AdminUserDto ToAdminUserDto(AppUser user)
+        {
+            return new AdminUserDto
+            {
+                UserId = user.UserId,
+                FullName = user.FullName,
+                PhoneNumber = user.PhoneNumber,
+                Address = user.Address,
+                Role = user.Role == 1 ? "admin" : "user",
+                AccountType = AccountTypes.Normalize(user.AccountType),
+                LastActiveAt = user.LastActiveAt,
+                DeactivatedAt = user.DeactivatedAt
+            };
         }
 
         private async Task<bool> IsAdminAsync()

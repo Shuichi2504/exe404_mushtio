@@ -40,6 +40,6 @@ namespace IoTAgriculture.Models
         public DateTime? LastActiveAt { get; set; }
 
         [Required, MaxLength(20)]
-        public string AccountType { get; set; } = "standard";
+        public string AccountType { get; set; } = AccountTypes.Standard;
     }
 }

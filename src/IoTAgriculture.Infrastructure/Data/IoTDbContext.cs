@@ -40,6 +40,13 @@ namespace IoTAgriculture.Data
                 .IsUnique()
                 .HasFilter("[Email] <> ''");
 
+            modelBuilder.Entity<AppUser>()
+                .ToTable(
+                    "Users",
+                    table => table.HasCheckConstraint(
+                        "CK_Users_AccountType",
+                        "[AccountType] IN ('standard', 'premium')"));
+
             modelBuilder.Entity<EmailVerificationCode>()
                 .HasIndex(x => new { x.Email, x.Purpose, x.Code });
 

@@ -67,6 +67,18 @@ namespace IoTAgriculture.Services
                     ALTER TABLE [Users] ADD [AccountType] nvarchar(20) NOT NULL
                         CONSTRAINT [DF_Users_AccountType] DEFAULT ('standard');
                 END
+
+                UPDATE [Users]
+                SET [AccountType] = CASE
+                    WHEN LOWER(LTRIM(RTRIM([AccountType]))) = 'premium' THEN 'premium'
+                    ELSE 'standard'
+                END;
+
+                IF OBJECT_ID(N'[CK_Users_AccountType]', N'C') IS NULL
+                BEGIN
+                    ALTER TABLE [Users] ADD CONSTRAINT [CK_Users_AccountType]
+                        CHECK ([AccountType] IN ('standard', 'premium'));
+                END
                 """);
 
             await db.Database.ExecuteSqlRawAsync("""
@@ -211,6 +223,7 @@ namespace IoTAgriculture.Services
                 Role = 1,
                 PasswordHash = password.Hash,
                 PasswordSalt = password.Salt,
+                AccountType = AccountTypes.Standard,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
             });

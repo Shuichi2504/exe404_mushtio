@@ -93,7 +93,12 @@ namespace IoTAgriculture.Infrastructure.Migrations
                     b.HasIndex("PhoneNumber")
                         .IsUnique();
 
-                    b.ToTable("Users");
+                    b.ToTable("Users", t =>
+                        {
+                            t.HasCheckConstraint(
+                                "CK_Users_AccountType",
+                                "[AccountType] IN ('standard', 'premium')");
+                        });
                 });
 
             modelBuilder.Entity("IoTAgriculture.Models.Device", b =>
