@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace IoTAgriculture.Services;
 
-public class GeminiService
+public class GeminiService : IGeminiService
 {
     private readonly string _apiKey;
     private readonly string _model;

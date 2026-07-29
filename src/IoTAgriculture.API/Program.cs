@@ -12,7 +12,7 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
-builder.Services.AddHttpClient<GeminiService>();
+builder.Services.AddHttpClient<IGeminiService, GeminiService>();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
