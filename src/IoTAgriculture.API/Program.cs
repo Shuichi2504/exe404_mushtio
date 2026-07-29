@@ -1,4 +1,5 @@
 using IoTAgriculture.Data;
+using IoTAgriculture.Serialization;
 using IoTAgriculture.Services;
 using IoTAgriculture.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -13,7 +14,12 @@ builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
 builder.Services.AddHttpClient<IGeminiService, GeminiService>();
-builder.Services.AddControllers();
+builder.Services.AddControllers().AddJsonOptions(options =>
+{
+    // SQL Server datetime2 does not retain DateTime.Kind. All persisted app
+    // timestamps are UTC, so always expose DateTime values with an explicit Z.
+    options.JsonSerializerOptions.Converters.Add(new UtcDateTimeJsonConverter());
+});
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
