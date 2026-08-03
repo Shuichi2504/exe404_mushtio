@@ -369,7 +369,11 @@ namespace IoTAgriculture.Services
                 if (manualOverrideUntil.HasValue &&
                     manualOverrideUntil.Value > nowUtc)
                 {
-                    if (diagnosticsChanged)
+                    var hadScheduledRun = schedule.NextRunAt != null ||
+                        schedule.NextRunLocal != null ||
+                        schedule.NextWaterTime > 0;
+                    ClearNextRun(schedule);
+                    if (diagnosticsChanged || hadScheduledRun)
                     {
                         schedule.ThresholdStatus = "manual-override";
                         await SaveAutomationStateAsync(schedule, cancellationToken);
@@ -591,12 +595,16 @@ namespace IoTAgriculture.Services
                     schedule.ActiveUntilAt = null;
                     schedule.ActiveUntilLocal = null;
                     schedule.ActiveSource = null;
+                    var hadScheduledRun = schedule.NextRunAt != null ||
+                        schedule.NextRunLocal != null ||
+                        schedule.NextWaterTime > 0;
+                    ClearNextRun(schedule);
                     var manualStatusChanged = !string.Equals(
                         schedule.ThresholdStatus,
                         "manual-override",
                         StringComparison.Ordinal);
                     schedule.ThresholdStatus = "manual-override";
-                    if (diagnosticsChanged || manualStatusChanged)
+                    if (diagnosticsChanged || manualStatusChanged || hadScheduledRun)
                     {
                         await SaveAutomationStateAsync(schedule, cancellationToken);
                     }
@@ -607,6 +615,19 @@ namespace IoTAgriculture.Services
                 {
                     schedule.ManualOverrideUntilAt = null;
                     schedule.ManualOverrideUntilLocal = null;
+                    if (schedule.Enabled)
+                    {
+                        SetNextRun(
+                            schedule,
+                            CalculateNextRun(
+                                schedule,
+                                nowLocal.AddMilliseconds(1)));
+                    }
+                    else
+                    {
+                        ClearNextRun(schedule);
+                    }
+                    scheduleDue = false;
                     diagnosticsChanged = true;
                 }
 
@@ -619,6 +640,15 @@ namespace IoTAgriculture.Services
                     _logger.LogInformation(
                         "[EngineDecision] pump={PumpKey}; action=none; reason=threshold-poller-has-priority.",
                         pumpKey);
+                    if (schedule.Enabled && IsScheduleDue(schedule, nowLocal))
+                    {
+                        SetNextRun(
+                            schedule,
+                            CalculateNextRun(
+                                schedule,
+                                nowLocal.AddMilliseconds(1)));
+                        diagnosticsChanged = true;
+                    }
                     if (diagnosticsChanged)
                     {
                         await SaveAutomationStateAsync(schedule, cancellationToken);
@@ -689,6 +719,15 @@ namespace IoTAgriculture.Services
                     _logger.LogInformation(
                         "[EngineDecision] pump={PumpKey}; action=none; reason=relay2-owned-by-manual-command.",
                         pumpKey);
+                    if (schedule.Enabled && IsScheduleDue(schedule, nowLocal))
+                    {
+                        SetNextRun(
+                            schedule,
+                            CalculateNextRun(
+                                schedule,
+                                nowLocal.AddMilliseconds(1)));
+                        diagnosticsChanged = true;
+                    }
                     if (diagnosticsChanged)
                     {
                         await SaveAutomationStateAsync(schedule, cancellationToken);
@@ -754,6 +793,7 @@ namespace IoTAgriculture.Services
                         stopAtLocal.ToString("yyyy-MM-dd HH:mm:ss");
                     schedule.LastRunAt = nowUtc.ToString("O");
                     schedule.LastRunLocal = nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                    ClearNextRun(schedule);
                 }
 
                 if (triggerSource == ThresholdSource)
@@ -908,6 +948,7 @@ namespace IoTAgriculture.Services
             schedule.ActiveUntilLocal = null;
             schedule.ActiveSource = null;
             schedule.ThresholdStatus = "manual-override";
+            ClearNextRun(schedule);
 
             if (!requestedValue && interruptedSource != null)
             {
@@ -922,6 +963,10 @@ namespace IoTAgriculture.Services
                         CalculateNextRun(schedule, nowLocal));
                 }
             }
+
+            // A manual lease has no truthful automatic "next run". The fixed
+            // schedule engine creates a fresh future slot when the lease ends.
+            ClearNextRun(schedule);
 
             await SaveAutomationStateAsync(schedule, cancellationToken);
             _logger.LogInformation(
@@ -1305,6 +1350,13 @@ namespace IoTAgriculture.Services
             schedule.NextWaterTime = nextUtc.ToUnixTimeSeconds();
         }
 
+        private static void ClearNextRun(AutoIrrigationScheduleDto schedule)
+        {
+            schedule.NextRunAt = null;
+            schedule.NextRunLocal = null;
+            schedule.NextWaterTime = 0;
+        }
+
         private static DateTime CalculateNextRun(
             AutoIrrigationScheduleDto schedule,
             DateTime referenceLocal)
@@ -1313,6 +1365,8 @@ namespace IoTAgriculture.Services
             var end = ParseTimeOfDay(schedule.EndTime);
             var firstRunToday = referenceLocal.Date.Add(start);
             var endToday = referenceLocal.Date.Add(end);
+            var interval = TimeSpan.FromMinutes(
+                Math.Max(1, schedule.IntervalMinutes));
             DateTime candidate;
 
             if (schedule.LastWaterTime > 0)
@@ -1320,28 +1374,16 @@ namespace IoTAgriculture.Services
                 var lastWaterLocal = TimeZoneInfo.ConvertTime(
                     DateTimeOffset.FromUnixTimeSeconds(schedule.LastWaterTime),
                     VietnamTimeZone).DateTime;
-                candidate = lastWaterLocal.AddMinutes(
-                    Math.Max(1, schedule.IntervalMinutes));
+                candidate = lastWaterLocal.Add(interval);
             }
             else
             {
-                // No completed watering means startTime is still due. Keeping
-                // that past slot prevents a save at 13:32 from silently skipping
-                // the 13:30 cycle.
                 candidate = firstRunToday;
             }
 
             if (candidate.Date < referenceLocal.Date)
             {
-                if (referenceLocal < firstRunToday)
-                {
-                    return firstRunToday;
-                }
-                if (referenceLocal >= endToday)
-                {
-                    return firstRunToday.AddDays(1);
-                }
-                return candidate;
+                candidate = firstRunToday;
             }
 
             var candidateStart = candidate.Date.Add(start);
@@ -1350,8 +1392,32 @@ namespace IoTAgriculture.Services
             {
                 return candidateStart;
             }
-            return candidate >= candidateEnd
-                ? candidateStart.AddDays(1)
+            if (candidate >= candidateEnd)
+            {
+                return candidateStart.AddDays(1);
+            }
+
+            if (candidate.Date > referenceLocal.Date)
+            {
+                return candidate;
+            }
+            if (referenceLocal < firstRunToday)
+            {
+                return candidate < firstRunToday ? firstRunToday : candidate;
+            }
+            if (referenceLocal >= endToday)
+            {
+                return firstRunToday.AddDays(1);
+            }
+            if (candidate <= referenceLocal)
+            {
+                var elapsedTicks = referenceLocal.Ticks - candidate.Ticks;
+                var intervalsToSkip = elapsedTicks / interval.Ticks + 1;
+                candidate = candidate.AddTicks(interval.Ticks * intervalsToSkip);
+            }
+
+            return candidate >= endToday
+                ? firstRunToday.AddDays(1)
                 : candidate;
         }
 
