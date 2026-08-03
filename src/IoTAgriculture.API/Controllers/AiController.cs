@@ -1,10 +1,12 @@
 using IoTAgriculture.API.Contracts;
 using IoTAgriculture.API.Services;
+using IoTAgriculture.Data;
 using IoTAgriculture.DTOs;
 using IoTAgriculture.Models;
 using IoTAgriculture.Services;
 using IoTAgriculture.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 
 namespace IoTAgriculture.Controllers;
@@ -16,17 +18,20 @@ public class AiController : ControllerBase
     private readonly IGeminiService _geminiService;
     private readonly IFirebaseRtdbService _firebase;
     private readonly IAuthService _authService;
+    private readonly IoTDbContext _db;
     private readonly ILogger<AiController> _logger;
 
     public AiController(
         IGeminiService geminiService,
         IFirebaseRtdbService firebase,
         IAuthService authService,
+        IoTDbContext db,
         ILogger<AiController> logger)
     {
         _geminiService = geminiService;
         _firebase = firebase;
         _authService = authService;
+        _db = db;
         _logger = logger;
     }
 
@@ -74,7 +79,9 @@ public class AiController : ControllerBase
         string answer;
         try
         {
-            var farmContext = await BuildFarmContextAsync(HttpContext.RequestAborted);
+            var farmContext = await BuildFarmContextAsync(
+                profile.UserId,
+                HttpContext.RequestAborted);
             answer = await _geminiService.AskAsync(
                 message,
                 request.Image,
@@ -104,11 +111,29 @@ public class AiController : ControllerBase
             : string.Empty;
     }
 
-    private async Task<string> BuildFarmContextAsync(CancellationToken cancellationToken)
+    private async Task<string> BuildFarmContextAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
     {
-        var devices = await _firebase.GetAsync<Dictionary<string, JsonElement>>(
+        var assignedKeys = await _db.UserDevices
+            .AsNoTracking()
+            .Where(x => x.UserId == userId)
+            .Select(x => x.DeviceKey)
+            .ToListAsync(cancellationToken);
+        if (assignedKeys.Count == 0)
+        {
+            return FarmContextFormatter.Format(
+                new Dictionary<string, JsonElement>());
+        }
+
+        var allowedKeys = assignedKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var allDevices = await _firebase.GetAsync<Dictionary<string, JsonElement>>(
             "devices",
             cancellationToken) ?? new Dictionary<string, JsonElement>();
-        return FarmContextFormatter.Format(devices);
+        var assignedDevices = allDevices
+            .Where(entry => allowedKeys.Contains(entry.Key))
+            .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
+
+        return FarmContextFormatter.Format(assignedDevices);
     }
 }
