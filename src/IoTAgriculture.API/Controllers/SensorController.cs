@@ -140,8 +140,25 @@ namespace IoTAgriculture.Controllers
             string sensorKey,
             [FromQuery] long? from,
             [FromQuery] long? to,
+            [FromQuery] string? period,
             CancellationToken cancellationToken)
         {
+            var normalizedPeriod = string.IsNullOrWhiteSpace(period)
+                ? null
+                : period.Trim().ToLowerInvariant();
+            if (normalizedPeriod is not null &&
+                normalizedPeriod is not ("hour" or "day" or "week" or "month"))
+            {
+                return BadRequest(new
+                {
+                    message = "period must be one of: hour, day, week, month."
+                });
+            }
+            if (from.HasValue && to.HasValue && from.Value >= to.Value)
+            {
+                return BadRequest(new { message = "from must be earlier than to." });
+            }
+
             var access = await ReadDeviceAccessAsync(cancellationToken);
             if (access == null) return Unauthorized();
             if (!access.CanRead(sensorKey)) return StatusCode(StatusCodes.Status403Forbidden);
