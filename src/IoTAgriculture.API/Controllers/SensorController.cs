@@ -77,13 +77,21 @@ namespace IoTAgriculture.Controllers
                 var timestamp = NormalizeTimestamp(x.Timestamp, nowMs);
                 return timestamp.HasValue && Math.Abs(nowMs - timestamp.Value) <= TimeSpan.FromMinutes(2).TotalMilliseconds;
             });
+            var criticalMessage = sensors
+                .Select(x => CriticalMessage(
+                    ReadDouble(x.Json, "temperature"),
+                    ReadDouble(x.Json, "humidity"),
+                    ReadDouble(x.Json, "air_quality")
+                        ?? ReadDouble(x.Json, "airQuality")
+                        ?? ReadDouble(x.Json, "air_quanlity")))
+                .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
 
             return Ok(new
             {
                 sensorCount = sensors.Count,
                 onlineCount,
                 latestUpdate = latestMs == 0 ? "Chưa có dữ liệu" : RelativeTime(latestMs, nowMs),
-                criticalMessage = CriticalMessage(avgTemp, avgHumidity, avgAirQuality),
+                criticalMessage,
                 temperature = Metric(avgTemp, TemperatureStatusText(avgTemp), TemperatureStatusLevel(avgTemp)),
                 humidity = Metric(avgHumidity, SensorStatus(avgHumidity, 70, 96), StatusLevel(avgHumidity, 70, 96)),
                 airQuality = Metric(
