@@ -28,6 +28,9 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("reason")]
         public string? Reason { get; set; }
 
+        [JsonPropertyName("intervalMinutes")]
+        public int? IntervalMinutes { get; set; }
+
         [JsonPropertyName("sensorKey")]
         public string? SensorKey { get; set; }
 
