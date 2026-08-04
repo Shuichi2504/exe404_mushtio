@@ -56,7 +56,15 @@ namespace IoTAgriculture.Controllers
                 "manual",
                 profile?.UserId.ToString(),
                 profile?.FullName ?? "Manual user");
-            return Ok(new { message = "Relay updated" });
+            var confirmedState = await _service.GetPumpStateAsync(deviceKey);
+            if (confirmedState == null)
+            {
+                return StatusCode(
+                    StatusCodes.Status503ServiceUnavailable,
+                    new { message = "Relay was submitted but backend state could not be confirmed" });
+            }
+
+            return Ok(confirmedState);
         }
 
         [HttpGet("{deviceKey}/logs")]
