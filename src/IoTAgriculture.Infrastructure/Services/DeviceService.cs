@@ -55,9 +55,9 @@ namespace IoTAgriculture.Services
                 if (string.Equals(source, "manual", StringComparison.OrdinalIgnoreCase) &&
                     cleanRelay == "relay2")
                 {
-                    // Manual commands own relay2 for at least one configured cooldown.
-                    // Persisting this lease in Firebase also protects against a second
-                    // backend instance immediately undoing the user's command.
+                    // A manual ON owns relay2 temporarily so automation cannot
+                    // immediately turn it off. A manual OFF only cancels the
+                    // current run and schedules the next normal cycle.
                     await ApplyManualOverrideAsync(
                         cleanPump,
                         value,
@@ -770,7 +770,10 @@ namespace IoTAgriculture.Services
                     ActorForSource(triggerSource),
                     cancellationToken,
                     triggerReason,
-                    triggerSource == ThresholdSource ? threshold : null);
+                    triggerSource == ThresholdSource ? threshold : null,
+                    intervalMinutes: triggerSource == ScheduleSource
+                        ? Math.Max(1, schedule.IntervalMinutes)
+                        : null);
                 if (!changed)
                 {
                     return;
@@ -820,7 +823,8 @@ namespace IoTAgriculture.Services
             string actorName,
             CancellationToken cancellationToken,
             string? reason = null,
-            ThresholdEvaluation? threshold = null)
+            ThresholdEvaluation? threshold = null,
+            int? intervalMinutes = null)
         {
             var state = await _firebase.GetAsync<PumpStateDto>(
                 $"devices/{pumpKey}",
@@ -843,6 +847,7 @@ namespace IoTAgriculture.Services
                 ActorUserId = actorUserId,
                 ActorName = actorName,
                 Reason = reason,
+                IntervalMinutes = intervalMinutes,
                 SensorKey = threshold?.SensorKey,
                 Temperature = threshold?.Temperature,
                 Humidity = threshold?.Humidity,
@@ -934,6 +939,45 @@ namespace IoTAgriculture.Services
 
             var nowUtc = DateTimeOffset.UtcNow;
             var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, VietnamTimeZone).DateTime;
+            var interruptedSource = NormalizeSource(schedule.ActiveSource);
+            schedule.ActiveUntilAt = null;
+            schedule.ActiveUntilLocal = null;
+            schedule.ActiveSource = null;
+
+            if (!requestedValue)
+            {
+                // Manual OFF is a one-shot cancellation, not a persistent pause.
+                // Use the stop time as the common anchor for the configured
+                // schedule interval and smart-threshold cooldown.
+                schedule.ManualOverrideUntilAt = null;
+                schedule.ManualOverrideUntilLocal = null;
+                schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
+                if (interruptedSource == ScheduleSource)
+                {
+                    schedule.LastRunAt = nowUtc.ToString("O");
+                    schedule.LastRunLocal =
+                        nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                }
+                if (schedule.Enabled)
+                {
+                    SetNextRun(schedule, CalculateNextRun(schedule, nowLocal));
+                }
+                else
+                {
+                    ClearNextRun(schedule);
+                }
+                schedule.ThresholdStatus = schedule.SmartEnabled
+                    ? "cooldown"
+                    : "disabled";
+
+                await SaveAutomationStateAsync(schedule, cancellationToken);
+                _logger.LogInformation(
+                    "[ManualStop] pump={PumpKey}; relay2=false; nextRun={NextRun}; automation remains enabled.",
+                    pumpKey,
+                    schedule.NextRunAt ?? "(none)");
+                return;
+            }
+
             var overrideUntilUtc = nowUtc.AddMinutes(
                 Math.Max(1, schedule.CooldownMinutes));
             var overrideUntilLocal = TimeZoneInfo.ConvertTime(
@@ -942,30 +986,7 @@ namespace IoTAgriculture.Services
             schedule.ManualOverrideUntilAt = overrideUntilUtc.ToString("O");
             schedule.ManualOverrideUntilLocal =
                 overrideUntilLocal.ToString("yyyy-MM-dd HH:mm:ss");
-
-            var interruptedSource = NormalizeSource(schedule.ActiveSource);
-            schedule.ActiveUntilAt = null;
-            schedule.ActiveUntilLocal = null;
-            schedule.ActiveSource = null;
             schedule.ThresholdStatus = "manual-override";
-            ClearNextRun(schedule);
-
-            if (!requestedValue && interruptedSource != null)
-            {
-                schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
-                if (interruptedSource == ScheduleSource)
-                {
-                    schedule.LastRunAt = nowUtc.ToString("O");
-                    schedule.LastRunLocal =
-                        nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
-                    SetNextRun(
-                        schedule,
-                        CalculateNextRun(schedule, nowLocal));
-                }
-            }
-
-            // A manual lease has no truthful automatic "next run". The fixed
-            // schedule engine creates a fresh future slot when the lease ends.
             ClearNextRun(schedule);
 
             await SaveAutomationStateAsync(schedule, cancellationToken);
