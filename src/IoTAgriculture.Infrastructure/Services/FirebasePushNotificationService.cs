@@ -157,7 +157,7 @@ namespace IoTAgriculture.Services
                             priority = "HIGH",
                             notification = new
                             {
-                                channel_id = "sensor_alerts",
+                                channel_id = "sensor_alerts_v2",
                                 sound = "default"
                             }
                         },
