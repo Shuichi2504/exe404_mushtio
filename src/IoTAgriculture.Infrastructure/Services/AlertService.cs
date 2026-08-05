@@ -6,10 +6,14 @@ namespace IoTAgriculture.Services
 {
     public class AlertService : IAlertService
     {
-        private const double HighTemperatureWarningCelsius = 30;
-        private const double HighTemperatureCriticalCelsius = 35;
-        private const double LowHumidityPercent = 70;
-        private const double HighHumidityPercent = 96;
+        private const double HighTemperatureWarningCelsius =
+            MushroomEnvironmentThresholds.HighTemperatureWarningCelsius;
+        private const double HighTemperatureCriticalCelsius =
+            MushroomEnvironmentThresholds.HighTemperatureCriticalCelsius;
+        private const double LowHumidityPercent =
+            MushroomEnvironmentThresholds.LowHumidityPercent;
+        private const double HighHumidityPercent =
+            MushroomEnvironmentThresholds.HighHumidityPercent;
         private static readonly TimeSpan AlertResendCooldown = TimeSpan.FromMinutes(30);
         private static readonly TimeSpan SensorOfflineAfter = TimeSpan.FromMinutes(2);
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
@@ -82,7 +86,7 @@ namespace IoTAgriculture.Services
                     "humidity",
                     humidity,
                     LowHumidityPercent,
-                    $"Độ ẩm không khí {FormatValue(humidity)}% thấp hơn ngưỡng {LowHumidityPercent:0.#}%",
+                    $"Độ ẩm thấp — cần tăng ẩm ({FormatValue(humidity)}% < {LowHumidityPercent:0.#}%)",
                     cancellationToken);
 
                 await UpsertAlertAsync(
@@ -93,7 +97,7 @@ namespace IoTAgriculture.Services
                     "humidity",
                     humidity,
                     HighHumidityPercent,
-                    $"Độ ẩm không khí {FormatValue(humidity)}% vượt ngưỡng {HighHumidityPercent:0.#}%",
+                    $"Độ ẩm quá cao — cần thông gió ({FormatValue(humidity)}% > {HighHumidityPercent:0.#}%)",
                     cancellationToken);
 
                 await UpsertAlertAsync(
