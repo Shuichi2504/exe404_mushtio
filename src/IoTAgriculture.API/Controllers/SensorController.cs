@@ -93,7 +93,13 @@ namespace IoTAgriculture.Controllers
                 latestUpdate = latestMs == 0 ? "Chưa có dữ liệu" : RelativeTime(latestMs, nowMs),
                 criticalMessage,
                 temperature = Metric(avgTemp, TemperatureStatusText(avgTemp), TemperatureStatusLevel(avgTemp)),
-                humidity = Metric(avgHumidity, SensorStatus(avgHumidity, 70, 96), StatusLevel(avgHumidity, 70, 96)),
+                humidity = Metric(
+                    avgHumidity,
+                    HumidityStatusText(avgHumidity),
+                    StatusLevel(
+                        avgHumidity,
+                        MushroomEnvironmentThresholds.LowHumidityPercent,
+                        MushroomEnvironmentThresholds.HighHumidityPercent)),
                 airQuality = Metric(
                     avgAirQuality,
                     avgAirQualityClassification.Label,
@@ -299,14 +305,6 @@ namespace IoTAgriculture.Controllers
             return local.ToString("dd/MM HH:mm");
         }
 
-        private static string SensorStatus(double? value, double min, double max)
-        {
-            if (value == null) return "Chưa có dữ liệu";
-            if (value < min) return "Thấp hơn ngưỡng";
-            if (value > max) return "Vượt ngưỡng";
-            return "Trong ngưỡng tốt";
-        }
-
         private static string StatusLevel(double? value, double min, double max)
         {
             if (value == null) return "muted";
@@ -323,6 +321,16 @@ namespace IoTAgriculture.Controllers
             return "Trong ngưỡng tốt";
         }
 
+        private static string HumidityStatusText(double? humidity)
+        {
+            if (humidity == null) return "Chưa có dữ liệu";
+            if (humidity < MushroomEnvironmentThresholds.LowHumidityPercent)
+                return "Độ ẩm thấp — cần tăng ẩm";
+            if (humidity > MushroomEnvironmentThresholds.HighHumidityPercent)
+                return "Độ ẩm quá cao — cần thông gió";
+            return "Trong ngưỡng tốt";
+        }
+
         private static string TemperatureStatusLevel(double? temp)
         {
             if (temp == null) return "muted";
@@ -336,7 +344,10 @@ namespace IoTAgriculture.Controllers
             if (temp > 35) return "Nhiệt độ rất cao, cần kiểm tra nhà nấm ngay.";
             if (temp > 30) return "Nhiệt độ cao, cần kiểm tra nhà nấm.";
             if (temp < 16) return "Nhiệt độ quá thấp, cần kiểm tra hệ thống.";
-            if (humidity < 70 || humidity > 96) return "Độ ẩm không khí bất thường, cần kiểm tra thông gió.";
+            if (humidity < MushroomEnvironmentThresholds.LowHumidityPercent)
+                return "Độ ẩm thấp — cần tăng ẩm.";
+            if (humidity > MushroomEnvironmentThresholds.HighHumidityPercent)
+                return "Độ ẩm quá cao — cần thông gió.";
             if (AirQualityClassifier.Classify(airQuality).Level == "critical")
                 return "CO₂ rất cao, cần kiểm tra thông gió ngay.";
             return null;
