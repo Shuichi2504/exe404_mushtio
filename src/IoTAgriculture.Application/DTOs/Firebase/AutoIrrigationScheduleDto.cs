@@ -73,6 +73,12 @@ namespace IoTAgriculture.DTOs.Firebase
         [JsonPropertyName("cooldownMinutes")]
         public int CooldownMinutes { get; set; } = 30;
 
+        [JsonPropertyName("cooldownUntilAt")]
+        public string? CooldownUntilAt { get; set; }
+
+        [JsonPropertyName("cooldownUntilLocal")]
+        public string? CooldownUntilLocal { get; set; }
+
         [JsonPropertyName("lastRunAt")]
         public string? LastRunAt { get; set; }
 

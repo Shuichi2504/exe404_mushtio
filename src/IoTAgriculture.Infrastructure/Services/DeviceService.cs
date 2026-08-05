@@ -9,6 +9,8 @@ namespace IoTAgriculture.Services
         private const string ScheduleSource = "schedule";
         private const string ThresholdSource = "threshold";
         private const string ManualSource = "manual";
+        private static readonly TimeSpan ManualStopProtectionInterval =
+            TimeSpan.FromSeconds(60);
         private static readonly TimeSpan DiagnosticsWriteInterval = TimeSpan.FromSeconds(30);
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
         private static readonly ConcurrentDictionary<string, SemaphoreSlim> DeviceLocks = new();
@@ -159,6 +161,8 @@ namespace IoTAgriculture.Services
                 AirHumidityOffThreshold =
                     dto.AirHumidityOffThreshold ?? dto.AirHumidityThreshold,
                 CooldownMinutes = dto.CooldownMinutes,
+                CooldownUntilAt = existing?.CooldownUntilAt,
+                CooldownUntilLocal = existing?.CooldownUntilLocal,
                 LastRunAt = existing?.LastRunAt,
                 LastRunLocal = existing?.LastRunLocal,
                 ActiveUntilAt = existing?.ActiveUntilAt,
@@ -406,6 +410,11 @@ namespace IoTAgriculture.Services
                         schedule.ActiveUntilAt = null;
                         schedule.ActiveUntilLocal = null;
                         schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
+                        SetCooldown(
+                            schedule,
+                            nowUtc,
+                            nowLocal,
+                            StandardCooldown(schedule));
                     }
                     await SaveAutomationStateAsync(schedule, cancellationToken);
                     return;
@@ -426,6 +435,10 @@ namespace IoTAgriculture.Services
                         return;
                     }
 
+                    var restartedAfterManualStop = HasShortenedCooldown(schedule);
+                    var triggerReason = restartedAfterManualStop
+                        ? $"Tự động bật lại sau khi tắt thủ công: {threshold.Reason}"
+                        : threshold.Reason;
                     var changed = await SetRelayIfChangedCoreAsync(
                         pumpKey,
                         "relay2",
@@ -434,11 +447,12 @@ namespace IoTAgriculture.Services
                         null,
                         ActorForSource(ThresholdSource),
                         cancellationToken,
-                        threshold.Reason,
+                        triggerReason,
                         threshold);
                     schedule.ActiveSource = ThresholdSource;
                     schedule.ActiveUntilAt = null;
                     schedule.ActiveUntilLocal = null;
+                    ClearCooldown(schedule);
                     schedule.ThresholdStatus = "watering";
                     if (changed || activeSource != ThresholdSource)
                     {
@@ -448,7 +462,7 @@ namespace IoTAgriculture.Services
                         _logger.LogInformation(
                             "[ThresholdAction] pump={PumpKey}; relay2=ON; reason={Reason}; temperature={Temperature}; humidity={Humidity}.",
                             pumpKey,
-                            threshold.Reason,
+                            triggerReason,
                             threshold.Temperature,
                             threshold.Humidity);
                     }
@@ -492,6 +506,11 @@ namespace IoTAgriculture.Services
                     schedule.ActiveUntilAt = null;
                     schedule.ActiveUntilLocal = null;
                     schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
+                    SetCooldown(
+                        schedule,
+                        nowUtc,
+                        nowLocal,
+                        StandardCooldown(schedule));
                     schedule.LastTriggeredAt = nowUtc.ToString("O");
                     schedule.LastTriggeredLocal =
                         nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
@@ -687,6 +706,11 @@ namespace IoTAgriculture.Services
                         schedule.ActiveUntilLocal = null;
                         schedule.ActiveSource = null;
                         schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
+                        SetCooldown(
+                            schedule,
+                            nowUtc,
+                            nowLocal,
+                            StandardCooldown(schedule));
                         if (activeSource == ScheduleSource)
                         {
                             schedule.LastRunAt = nowUtc.ToString("O");
@@ -940,10 +964,30 @@ namespace IoTAgriculture.Services
 
             var nowUtc = DateTimeOffset.UtcNow;
             var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, VietnamTimeZone).DateTime;
+            var devices = await _firebase.GetAsync<
+                    Dictionary<string, AutomationDeviceStateDto>>(
+                    "devices",
+                    cancellationToken)
+                ?? new Dictionary<string, AutomationDeviceStateDto>();
+
+            // Only an actual ON -> OFF transition may start a new protection
+            // window. Duplicate OFF requests (for example UI retries) must not
+            // keep extending smart-threshold suppression indefinitely.
+            if (!requestedValue &&
+                devices.TryGetValue(pumpKey, out var currentPump) &&
+                currentPump.Relay2 == false)
+            {
+                _logger.LogInformation(
+                    "[ManualStop] pump={PumpKey}; relay2 already false; protection window unchanged.",
+                    pumpKey);
+                return;
+            }
+
             var interruptedSource = NormalizeSource(schedule.ActiveSource);
             schedule.ActiveUntilAt = null;
             schedule.ActiveUntilLocal = null;
             schedule.ActiveSource = null;
+            var threshold = EvaluateThreshold(schedule, devices);
 
             if (!requestedValue)
             {
@@ -953,6 +997,17 @@ namespace IoTAgriculture.Services
                 schedule.ManualOverrideUntilAt = null;
                 schedule.ManualOverrideUntilLocal = null;
                 schedule.LastWaterTime = nowUtc.ToUnixTimeSeconds();
+                var cooldown = schedule.SmartEnabled && threshold.IsViolated
+                    ? ManualStopProtectionInterval
+                    : StandardCooldown(schedule);
+                SetCooldown(schedule, nowUtc, nowLocal, cooldown);
+                UpdateAutomationDiagnostics(
+                    schedule,
+                    threshold,
+                    cooldown <= TimeSpan.Zero,
+                    nowUtc,
+                    nowLocal,
+                    activeSource: null);
                 if (interruptedSource == ScheduleSource)
                 {
                     schedule.LastRunAt = nowUtc.ToString("O");
@@ -973,18 +1028,15 @@ namespace IoTAgriculture.Services
 
                 await SaveAutomationStateAsync(schedule, cancellationToken);
                 _logger.LogInformation(
-                    "[ManualStop] pump={PumpKey}; relay2=false; nextRun={NextRun}; automation remains enabled.",
+                    "[ManualStop] pump={PumpKey}; relay2=false; thresholdViolated={ThresholdViolated}; cooldownUntil={CooldownUntil}; nextRun={NextRun}; automation remains enabled.",
                     pumpKey,
+                    threshold.IsViolated,
+                    schedule.CooldownUntilAt ?? "(none)",
                     schedule.NextRunAt ?? "(none)");
                 return;
             }
 
-            var devices = await _firebase.GetAsync<
-                    Dictionary<string, AutomationDeviceStateDto>>(
-                    "devices",
-                    cancellationToken)
-                ?? new Dictionary<string, AutomationDeviceStateDto>();
-            var threshold = EvaluateThreshold(schedule, devices);
+            ClearCooldown(schedule);
             if (schedule.SmartEnabled && threshold.IsViolated)
             {
                 // A manual request starts the pump, but an already-active smart
@@ -1143,6 +1195,10 @@ namespace IoTAgriculture.Services
                     config.AirHumidityOffThreshold ??
                     config.AirHumidityThreshold,
                 CooldownMinutes = Math.Max(1, config.CooldownMinutes),
+                CooldownUntilAt =
+                    runtime.CooldownUntilAt ?? config.CooldownUntilAt,
+                CooldownUntilLocal =
+                    runtime.CooldownUntilLocal ?? config.CooldownUntilLocal,
                 LastRunAt = runtime.LastRunAt ?? config.LastRunAt,
                 LastRunLocal = runtime.LastRunLocal ?? config.LastRunLocal,
                 ActiveUntilAt = runtime.ActiveUntilAt ?? config.ActiveUntilAt,
@@ -1368,6 +1424,12 @@ namespace IoTAgriculture.Services
             AutoIrrigationScheduleDto schedule,
             DateTimeOffset nowUtc)
         {
+            var explicitEnd = ParseUtcDateTimeOffset(schedule.CooldownUntilAt);
+            if (explicitEnd.HasValue)
+            {
+                return nowUtc >= explicitEnd.Value;
+            }
+
             if (schedule.LastWaterTime <= 0)
             {
                 return true;
@@ -1375,8 +1437,43 @@ namespace IoTAgriculture.Services
 
             var lastStoppedAt =
                 DateTimeOffset.FromUnixTimeSeconds(schedule.LastWaterTime);
-            return nowUtc - lastStoppedAt >=
-                TimeSpan.FromMinutes(Math.Max(1, schedule.CooldownMinutes));
+            return nowUtc - lastStoppedAt >= StandardCooldown(schedule);
+        }
+
+        private static TimeSpan StandardCooldown(
+            AutoIrrigationScheduleDto schedule) =>
+            TimeSpan.FromMinutes(Math.Max(1, schedule.CooldownMinutes));
+
+        private static void SetCooldown(
+            AutoIrrigationScheduleDto schedule,
+            DateTimeOffset nowUtc,
+            DateTime nowLocal,
+            TimeSpan duration)
+        {
+            schedule.CooldownUntilAt = nowUtc.Add(duration).ToString("O");
+            schedule.CooldownUntilLocal = nowLocal.Add(duration)
+                .ToString("yyyy-MM-dd HH:mm:ss");
+        }
+
+        private static void ClearCooldown(AutoIrrigationScheduleDto schedule)
+        {
+            schedule.CooldownUntilAt = null;
+            schedule.CooldownUntilLocal = null;
+        }
+
+        private static bool HasShortenedCooldown(
+            AutoIrrigationScheduleDto schedule)
+        {
+            var explicitEnd = ParseUtcDateTimeOffset(schedule.CooldownUntilAt);
+            if (!explicitEnd.HasValue || schedule.LastWaterTime <= 0)
+            {
+                return false;
+            }
+
+            var standardEnd = DateTimeOffset
+                .FromUnixTimeSeconds(schedule.LastWaterTime)
+                .Add(StandardCooldown(schedule));
+            return explicitEnd.Value < standardEnd;
         }
 
         private static bool IsScheduleDue(
