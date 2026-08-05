@@ -8,6 +8,7 @@ namespace IoTAgriculture.Services
     {
         private const string ScheduleSource = "schedule";
         private const string ThresholdSource = "threshold";
+        private const string ManualSource = "manual";
         private static readonly TimeSpan DiagnosticsWriteInterval = TimeSpan.FromSeconds(30);
         private static readonly TimeZoneInfo VietnamTimeZone = ResolveVietnamTimeZone();
         private static readonly ConcurrentDictionary<string, SemaphoreSlim> DeviceLocks = new();
@@ -592,9 +593,6 @@ namespace IoTAgriculture.Services
                     _logger.LogInformation(
                         "[EngineDecision] pump={PumpKey}; action=none; reason=manual-override.",
                         pumpKey);
-                    schedule.ActiveUntilAt = null;
-                    schedule.ActiveUntilLocal = null;
-                    schedule.ActiveSource = null;
                     var hadScheduledRun = schedule.NextRunAt != null ||
                         schedule.NextRunLocal != null ||
                         schedule.NextWaterTime > 0;
@@ -658,8 +656,9 @@ namespace IoTAgriculture.Services
 
                 if (activeUntil.HasValue)
                 {
-                    var ownerEnabled = schedule.Enabled;
-                    var ownerWindowValid = insideWindow;
+                    var isManualRun = activeSource == ManualSource;
+                    var ownerEnabled = isManualRun || schedule.Enabled;
+                    var ownerWindowValid = isManualRun || insideWindow;
                     if (activeUntil.Value <= nowLocal ||
                         !ownerWindowValid ||
                         !ownerEnabled)
@@ -680,7 +679,9 @@ namespace IoTAgriculture.Services
                             ActorForSource(activeSource),
                             cancellationToken,
                             reason: activeUntil.Value <= nowLocal
-                                ? "Đã hết thời lượng tưới tự động."
+                                ? isManualRun
+                                    ? "Đã hết thời lượng tưới thủ công."
+                                    : "Đã hết thời lượng tưới tự động."
                                 : "Chế độ tự động đã tắt hoặc ngoài khung giờ hoạt động.");
                         schedule.ActiveUntilAt = null;
                         schedule.ActiveUntilLocal = null;
@@ -978,23 +979,59 @@ namespace IoTAgriculture.Services
                 return;
             }
 
-            var overrideUntilUtc = nowUtc.AddMinutes(
-                Math.Max(1, schedule.CooldownMinutes));
-            var overrideUntilLocal = TimeZoneInfo.ConvertTime(
-                overrideUntilUtc,
-                VietnamTimeZone);
-            schedule.ManualOverrideUntilAt = overrideUntilUtc.ToString("O");
-            schedule.ManualOverrideUntilLocal =
-                overrideUntilLocal.ToString("yyyy-MM-dd HH:mm:ss");
-            schedule.ThresholdStatus = "manual-override";
+            var devices = await _firebase.GetAsync<
+                    Dictionary<string, AutomationDeviceStateDto>>(
+                    "devices",
+                    cancellationToken)
+                ?? new Dictionary<string, AutomationDeviceStateDto>();
+            var threshold = EvaluateThreshold(schedule, devices);
+            if (schedule.SmartEnabled && threshold.IsViolated)
+            {
+                // A manual request starts the pump, but an already-active smart
+                // condition owns the run so it can continue past the configured
+                // duration and stop only when every enabled condition is clear.
+                schedule.ActiveSource = ThresholdSource;
+                schedule.ManualOverrideUntilAt = null;
+                schedule.ManualOverrideUntilLocal = null;
+                schedule.LastSmartRunAt = nowUtc.ToString("O");
+                schedule.LastSmartRunLocal =
+                    nowLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                UpdateAutomationDiagnostics(
+                    schedule,
+                    threshold,
+                    IsCooldownComplete(schedule, nowUtc),
+                    nowUtc,
+                    nowLocal,
+                    ThresholdSource);
+                schedule.ThresholdStatus = "watering";
+                _logger.LogInformation(
+                    "[ManualThresholdHandoff] pump={PumpKey}; relay2=true; reason={Reason}; run continues until smart thresholds clear.",
+                    pumpKey,
+                    threshold.Reason);
+            }
+            else
+            {
+                var stopAtLocal = nowLocal.AddSeconds(
+                    EffectiveDurationSeconds(schedule));
+                var stopAtUtc = ToUtcOffset(stopAtLocal);
+                schedule.ActiveSource = ManualSource;
+                schedule.ActiveUntilAt = stopAtUtc.ToString("O");
+                schedule.ActiveUntilLocal =
+                    stopAtLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                schedule.ManualOverrideUntilAt = stopAtUtc.ToString("O");
+                schedule.ManualOverrideUntilLocal =
+                    stopAtLocal.ToString("yyyy-MM-dd HH:mm:ss");
+                schedule.ThresholdStatus = "manual-override";
+            }
             ClearNextRun(schedule);
 
             await SaveAutomationStateAsync(schedule, cancellationToken);
             _logger.LogInformation(
-                "[ManualOverride] pump={PumpKey}; relay2={RelayValue}; automation suppressed until {OverrideUntil}.",
+                "[ManualOverride] pump={PumpKey}; relay2={RelayValue}; activeSource={ActiveSource}; activeUntil={ActiveUntil}.",
                 pumpKey,
                 requestedValue,
-                overrideUntilUtc);
+                schedule.ActiveSource,
+                schedule.ActiveUntilAt ?? "threshold-clear");
         }
 
         private async Task SaveScheduleCopiesAsync(
@@ -1539,9 +1576,12 @@ namespace IoTAgriculture.Services
 
         private static string ActorForSource(string? source)
         {
-            return NormalizeSource(source) == ThresholdSource
-                ? "Auto - Ngưỡng tưới"
-                : "Auto - Lịch tưới";
+            return NormalizeSource(source) switch
+            {
+                ThresholdSource => "Auto - Ngưỡng tưới",
+                ManualSource => "Hệ thống - Hết thời lượng thủ công",
+                _ => "Auto - Lịch tưới"
+            };
         }
 
         private static string CleanKey(string value, string parameterName)
