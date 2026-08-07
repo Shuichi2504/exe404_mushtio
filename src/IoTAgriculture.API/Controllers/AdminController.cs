@@ -76,9 +76,18 @@ namespace IoTAgriculture.Controllers
             [FromBody] UpdateAccountTypeRequestDto dto,
             CancellationToken cancellationToken)
         {
-            if (!await IsAdminAsync())
+            var adminProfile = await _authService.GetProfileAsync(ReadBearerToken());
+            if (adminProfile?.Role != "admin")
             {
                 return StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            if (adminProfile.UserId == userId)
+            {
+                return BadRequest(new
+                {
+                    message = "Không thể tự đổi loại tài khoản của chính bạn"
+                });
             }
 
             var requestedType = dto.AccountType?.Trim();
@@ -96,6 +105,14 @@ namespace IoTAgriculture.Controllers
             if (user == null)
             {
                 return NotFound(new { message = "Không tìm thấy tài khoản" });
+            }
+
+            if (user.DeactivatedAt != null)
+            {
+                return BadRequest(new
+                {
+                    message = "Không thể đổi loại tài khoản của tài khoản đã vô hiệu hóa"
+                });
             }
 
             user.AccountType = AccountTypes.Normalize(requestedType);
