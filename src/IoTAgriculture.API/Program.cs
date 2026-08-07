@@ -83,6 +83,9 @@ app.MapGet("/api/health", (
     database = databaseHealth.Snapshot()
 }));
 app.MapControllers();
+app.MapFallback(
+    "/api/{**path}",
+    () => Results.NotFound(new { message = "API endpoint not found" }));
 app.MapFallbackToFile("index.html");
 
 app.Run();
